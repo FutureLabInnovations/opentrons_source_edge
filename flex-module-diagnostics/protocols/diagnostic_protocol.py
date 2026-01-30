@@ -27,13 +27,15 @@ import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-# Metadata
+# Metadata and Requirements
 metadata = {
     "protocolName": "Flex Module Diagnostics Suite",
     "author": "Opentrons Service Team",
     "description": "Comprehensive diagnostics for all Flex-compatible modules",
-    "apiLevel": "2.16"
 }
+
+# This tells the Opentrons App this is a Flex protocol
+requirements = {"robotType": "Flex", "apiLevel": "2.16"}
 
 # Configuration - Modify these to match your deck setup
 MODULES_TO_TEST = {

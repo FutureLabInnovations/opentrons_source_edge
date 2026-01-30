@@ -1,0 +1,8 @@
+# Opentrons Module Diagnostic Tools
+# Requirements for running maintenance diagnostics
+
+# Core requirement - Serial communication
+pyserial>=3.5
+
+# Optional - For enhanced port detection
+pyserial[tools]>=3.5

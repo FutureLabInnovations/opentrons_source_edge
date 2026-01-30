@@ -55,6 +55,176 @@ except ImportError:
     print("WARNING: Not running on OT-2 robot. Running in simulation mode.")
 
 
+# =============================================================================
+# DIAGNOSTIC ACCEPTANCE CRITERIA AND MARGINS
+# =============================================================================
+# These values are based on OT-2 specifications and empirical testing.
+# Adjust as needed for specific requirements.
+
+class DiagnosticMargins:
+    """
+    Acceptance criteria for all diagnostic tests.
+    Based on Opentrons OT-2 specifications and empirical data.
+    """
+
+    # -------------------------------------------------------------------------
+    # MOTION SYSTEM MARGINS
+    # -------------------------------------------------------------------------
+
+    # Homing Accuracy (measured over 5 iterations)
+    # Source: OT-2 spec sheet, industry liquid handler standards
+    HOMING_RANGE_PASS = 0.1          # mm - excellent repeatability
+    HOMING_RANGE_WARNING = 0.3       # mm - acceptable
+    HOMING_RANGE_FAIL = 0.3          # mm - above this = fail
+
+    HOMING_STDEV_PASS = 0.03         # mm
+    HOMING_STDEV_WARNING = 0.08      # mm
+
+    HOMING_ERROR_FROM_EXPECTED_PASS = 1.0    # mm
+    HOMING_ERROR_FROM_EXPECTED_WARNING = 2.0  # mm
+
+    # Position Repeatability (3D, measured over 10 iterations)
+    # Source: OT-2 specification: ±0.1mm repeatability
+    REPEATABILITY_3D_PASS = 0.1      # mm - within spec
+    REPEATABILITY_3D_WARNING = 0.25  # mm - degraded
+    REPEATABILITY_3D_FAIL = 0.25     # mm - above this = fail
+
+    REPEATABILITY_AXIS_RANGE_PASS = 0.05    # mm per axis
+    REPEATABILITY_AXIS_RANGE_WARNING = 0.15  # mm per axis
+
+    # Cross-Deck Accuracy
+    # Source: OT-2 specification, labware positioning requirements
+    CROSS_DECK_ERROR_PASS = 0.5      # mm - excellent
+    CROSS_DECK_ERROR_WARNING = 1.5   # mm - acceptable
+    CROSS_DECK_ERROR_FAIL = 1.5      # mm - above this = fail
+
+    # Z-Axis Movement (100mm test move)
+    Z_TRAVEL_ERROR_PASS = 1.0        # mm
+    Z_TRAVEL_ERROR_WARNING = 2.0     # mm
+    Z_TRAVEL_ERROR_FAIL = 2.0        # mm
+
+    # Speed Accuracy
+    SPEED_ERROR_PERCENT_PASS = 10    # % error
+    SPEED_ERROR_PERCENT_WARNING = 20  # % error
+
+    # -------------------------------------------------------------------------
+    # EXPECTED POSITIONS (mm)
+    # -------------------------------------------------------------------------
+
+    # Home positions (OT-2 standard)
+    HOME_X = 418.0
+    HOME_Y = 353.0
+    HOME_Z = 218.0
+    HOME_A = 218.0
+    HOME_TOLERANCE = 0.5  # mm
+
+    # -------------------------------------------------------------------------
+    # PIPETTE MARGINS
+    # -------------------------------------------------------------------------
+
+    # Plunger Travel
+    PLUNGER_TRAVEL_MIN_PASS = 1.0    # mm - minimum acceptable travel
+    PLUNGER_TRAVEL_MIN_WARNING = 0.5  # mm
+
+    # Pipette Offset (calibration)
+    PIPETTE_OFFSET_MAGNITUDE_PASS = 3.0      # mm - normal range
+    PIPETTE_OFFSET_MAGNITUDE_WARNING = 5.0   # mm - suspicious, investigate
+
+    # Tip Length (expected range)
+    TIP_LENGTH_MIN = 20.0   # mm - minimum reasonable tip
+    TIP_LENGTH_MAX = 100.0  # mm - maximum reasonable tip
+
+    # -------------------------------------------------------------------------
+    # TEMPERATURE MODULE MARGINS
+    # -------------------------------------------------------------------------
+
+    # Temperature reading (ambient condition)
+    TEMP_MODULE_AMBIENT_MIN = 5.0    # °C - minimum reasonable ambient
+    TEMP_MODULE_AMBIENT_MAX = 50.0   # °C - maximum reasonable ambient
+
+    # Temperature accuracy
+    TEMP_MODULE_ACCURACY_PASS = 0.5   # °C - within spec
+    TEMP_MODULE_ACCURACY_WARNING = 1.0  # °C
+
+    # Heating/Cooling time (to 37°C from ambient)
+    TEMP_MODULE_HEAT_TIME_PASS = 180      # seconds (3 min)
+    TEMP_MODULE_HEAT_TIME_WARNING = 300   # seconds (5 min)
+
+    TEMP_MODULE_COOL_TIME_PASS = 480      # seconds (8 min) to 4°C
+    TEMP_MODULE_COOL_TIME_WARNING = 900   # seconds (15 min)
+
+    # -------------------------------------------------------------------------
+    # MAGNETIC MODULE MARGINS
+    # -------------------------------------------------------------------------
+
+    MAGDECK_RESPONSE_TIME_PASS = 2.0      # seconds
+    MAGDECK_RESPONSE_TIME_FAIL = 5.0      # seconds
+    MAGDECK_POSITION_ACCURACY = 0.5       # mm
+
+    # -------------------------------------------------------------------------
+    # THERMOCYCLER MARGINS
+    # -------------------------------------------------------------------------
+
+    TC_LID_TIME_PASS = 5.0       # seconds - open/close
+    TC_LID_TIME_WARNING = 10.0   # seconds
+
+    TC_LID_TEMP_TIME_PASS = 300      # seconds (5 min) to 105°C
+    TC_LID_TEMP_TIME_WARNING = 600   # seconds (10 min)
+
+    TC_PLATE_TEMP_TIME_PASS = 120    # seconds (2 min) to 95°C
+    TC_PLATE_TEMP_TIME_WARNING = 300  # seconds (5 min)
+
+    TC_TEMP_ACCURACY_PASS = 0.5      # °C
+    TC_TEMP_ACCURACY_WARNING = 1.0   # °C
+
+    TC_RAMP_RATE_PASS = 2.0          # °C/s
+    TC_RAMP_RATE_WARNING = 1.0       # °C/s
+
+    # -------------------------------------------------------------------------
+    # HEATER-SHAKER MARGINS
+    # -------------------------------------------------------------------------
+
+    HS_LATCH_TIME_PASS = 2.0         # seconds
+    HS_LATCH_TIME_WARNING = 5.0      # seconds
+
+    HS_HEAT_TIME_PASS = 180          # seconds (3 min) to 37°C
+    HS_HEAT_TIME_WARNING = 300       # seconds (5 min)
+
+    HS_TEMP_ACCURACY_PASS = 0.5      # °C
+    HS_TEMP_ACCURACY_WARNING = 1.0   # °C
+
+    HS_SPEED_ACCURACY_PASS = 1.0     # % error
+    HS_SPEED_ACCURACY_WARNING = 5.0  # % error
+    HS_SPEED_ACCURACY_FAIL = 10.0    # % error
+
+    # -------------------------------------------------------------------------
+    # CALIBRATION MARGINS
+    # -------------------------------------------------------------------------
+
+    # Deck calibration matrix
+    DECK_MATRIX_DET_MIN = 0.9        # minimum determinant
+    DECK_MATRIX_DET_MAX = 1.1        # maximum determinant
+    DECK_MATRIX_DET_IDEAL_MIN = 0.95
+    DECK_MATRIX_DET_IDEAL_MAX = 1.05
+
+    # Calibration age (days)
+    CALIBRATION_AGE_PASS = 90        # 3 months
+    CALIBRATION_AGE_WARNING = 180    # 6 months
+
+    # -------------------------------------------------------------------------
+    # SYSTEM HEALTH MARGINS
+    # -------------------------------------------------------------------------
+
+    DISK_USAGE_PASS = 80             # % - below this = pass
+    DISK_USAGE_WARNING = 95          # % - above this = fail
+
+    DISK_FREE_MIN_PASS = 500         # MB
+    DISK_FREE_MIN_WARNING = 100      # MB
+
+    ERROR_LOG_COUNT_PASS = 0         # errors in 24h
+    ERROR_LOG_COUNT_WARNING = 10     # errors in 24h
+
+
 class TestStatus(Enum):
     PASS = "PASS"
     FAIL = "FAIL"

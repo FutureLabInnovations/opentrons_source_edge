@@ -1,0 +1,220 @@
+═══════════════════════════════════════════════════════════════════
+              TEMPERATURE MODULE GEN2 SERVICE REPORT
+═══════════════════════════════════════════════════════════════════
+
+Date: ____________________
+Technician: ____________________
+Location: ____________________
+Work Order #: ____________________
+
+───────────────────────────────────────────────────────────────────
+MODULE IDENTIFICATION
+───────────────────────────────────────────────────────────────────
+
+Serial Number: ____________________
+Model: ____________________  (temp_deck_v20 / temp_deck_v21 / etc.)
+Firmware Version: ____________________
+Hardware Generation: [ ] GEN1  [ ] GEN2
+
+Robot Platform: [ ] OT-2  [ ] Flex
+Robot Serial: ____________________
+Robot Software Version: ____________________
+Installed Slot: ____________________
+
+───────────────────────────────────────────────────────────────────
+CONNECTION STATUS
+───────────────────────────────────────────────────────────────────
+
+USB Connection: [ ] PASS  [ ] FAIL
+Serial Port Detected: ____________________
+Communication Test (M115): [ ] PASS  [ ] FAIL
+Response Time: ________ ms
+
+───────────────────────────────────────────────────────────────────
+TEMPERATURE SYSTEM TESTS
+───────────────────────────────────────────────────────────────────
+
+Ambient Room Temperature: ________ °C
+Module Initial Reading: ________ °C
+Thermistor Status: [ ] PASS  [ ] FAIL  [ ] OUT OF RANGE
+
+HEATING TEST (Target: 40°C)
+  - Target Reached: [ ] YES  [ ] NO
+  - Final Temperature: ________ °C
+  - Time to Target: ________ minutes
+  - Deviation from Target: ________ °C
+  - Status: [ ] PASS  [ ] FAIL
+
+COOLING TEST (Target: 15°C)
+  - Target Reached: [ ] YES  [ ] NO
+  - Final Temperature: ________ °C
+  - Time to Target: ________ minutes
+  - Deviation from Target: ________ °C
+  - Status: [ ] PASS  [ ] FAIL
+
+STABILITY TEST (5 minute hold at target)
+  - Hold Temperature: ________ °C
+  - Maximum Reading: ________ °C
+  - Minimum Reading: ________ °C
+  - Total Deviation: ________ °C
+  - Status: [ ] PASS (≤0.5°C)  [ ] FAIL (>0.5°C)
+
+───────────────────────────────────────────────────────────────────
+FAN SYSTEM
+───────────────────────────────────────────────────────────────────
+
+Fan Audible During Cooling: [ ] YES  [ ] NO
+Fan Audible During Heating: [ ] YES  [ ] NO
+Fan Noise Level: [ ] Normal  [ ] Abnormal (describe below)
+Fan Status: [ ] PASS  [ ] FAIL
+
+Notes: ____________________________________________________________
+
+───────────────────────────────────────────────────────────────────
+DISPLAY SYSTEM
+───────────────────────────────────────────────────────────────────
+
+7-Segment Display: [ ] PASS  [ ] FAIL  [ ] PARTIAL
+  - All segments visible: [ ] YES  [ ] NO
+  - Digits updating correctly: [ ] YES  [ ] NO
+
+RGB Status Bar (GEN2 only):
+  - Blue (cooling): [ ] PASS  [ ] FAIL  [ ] N/A
+  - Red (heating): [ ] PASS  [ ] FAIL  [ ] N/A
+  - Green (at target): [ ] PASS  [ ] FAIL  [ ] N/A
+
+───────────────────────────────────────────────────────────────────
+PHYSICAL INSPECTION
+───────────────────────────────────────────────────────────────────
+
+[ ] Thermal block properly seated
+[ ] Thermal block surface clean and undamaged
+[ ] No visible corrosion on deck surface
+[ ] Insulating rim intact (GEN2)
+[ ] Insulating shroud present (GEN2)
+[ ] USB connector undamaged
+[ ] USB cable in good condition
+[ ] No unusual odors (burnt components)
+[ ] Housing/enclosure intact
+[ ] Mounting hardware secure
+[ ] Heat sink fins clear of debris
+[ ] Fan blades unobstructed
+
+Physical Damage Notes: ____________________________________________
+________________________________________________________________
+
+───────────────────────────────────────────────────────────────────
+G-CODE COMMAND TESTS
+───────────────────────────────────────────────────────────────────
+
+Test                          Result      Response
+──────────────────────────────────────────────────────────────
+M115 (Device Info)            [ ]PASS [ ]FAIL  ________________
+M105 (Get Temperature)        [ ]PASS [ ]FAIL  ________________
+M104 S30 (Set Temperature)    [ ]PASS [ ]FAIL  ________________
+M18 (Deactivate)              [ ]PASS [ ]FAIL  ________________
+
+───────────────────────────────────────────────────────────────────
+CALIBRATION STATUS
+───────────────────────────────────────────────────────────────────
+
+Module Detected by Robot Software: [ ] YES  [ ] NO
+Module Appears in Opentrons App: [ ] YES  [ ] NO
+Labware Offset Calibration: [ ] Complete  [ ] Pending  [ ] Failed
+
+Calibration Notes: ________________________________________________
+
+───────────────────────────────────────────────────────────────────
+ERROR CODES / MESSAGES
+───────────────────────────────────────────────────────────────────
+
+[ ] No errors observed
+
+Error Messages (if any):
+1. ________________________________________________________________
+2. ________________________________________________________________
+3. ________________________________________________________________
+
+───────────────────────────────────────────────────────────────────
+DIAGNOSTIC TEST SUMMARY
+───────────────────────────────────────────────────────────────────
+
+Test                          Result
+──────────────────────────────────────────────────────────────
+USB Connection                [ ] PASS  [ ] FAIL
+Device Info (M115)            [ ] PASS  [ ] FAIL
+Temperature Reading (M105)    [ ] PASS  [ ] FAIL
+Set Temperature (M104)        [ ] PASS  [ ] FAIL
+Deactivate (M18)              [ ] PASS  [ ] FAIL
+Heating Capability            [ ] PASS  [ ] FAIL
+Cooling Capability            [ ] PASS  [ ] FAIL
+Temperature Stability         [ ] PASS  [ ] FAIL
+Fan Operation                 [ ] PASS  [ ] FAIL
+Display Function              [ ] PASS  [ ] FAIL
+Physical Inspection           [ ] PASS  [ ] FAIL
+
+───────────────────────────────────────────────────────────────────
+OVERALL STATUS
+───────────────────────────────────────────────────────────────────
+
+[ ] PASS - Module functioning within specifications
+[ ] CONDITIONAL PASS - Minor issues noted (see recommendations)
+[ ] FAIL - Module requires repair/replacement
+
+───────────────────────────────────────────────────────────────────
+ACTIONS TAKEN
+───────────────────────────────────────────────────────────────────
+
+[ ] Firmware updated to version: ____________________
+[ ] Module replaced (new serial): ____________________
+[ ] Cable replaced
+[ ] Thermal block cleaned
+[ ] Thermal block replaced
+[ ] Other: ____________________________________________________________
+
+───────────────────────────────────────────────────────────────────
+RECOMMENDATIONS
+───────────────────────────────────────────────────────────────────
+
+[ ] No action required
+[ ] Schedule follow-up service
+[ ] Replace module
+[ ] Replace thermal block(s)
+[ ] Update robot software
+[ ] Customer training recommended
+
+Detailed Recommendations:
+________________________________________________________________
+________________________________________________________________
+________________________________________________________________
+________________________________________________________________
+
+───────────────────────────────────────────────────────────────────
+CUSTOMER ACKNOWLEDGMENT
+───────────────────────────────────────────────────────────────────
+
+Customer Name: ____________________
+Customer Signature: ____________________
+Date: ____________________
+
+───────────────────────────────────────────────────────────────────
+TECHNICIAN CERTIFICATION
+───────────────────────────────────────────────────────────────────
+
+I certify that the above diagnostic tests were performed according
+to Opentrons service procedures and the results are accurate.
+
+Technician Name: ____________________
+Technician Signature: ____________________
+Date: ____________________
+
+═══════════════════════════════════════════════════════════════════
+                         END OF REPORT
+═══════════════════════════════════════════════════════════════════
+
+Document Reference: Opentrons Temperature Module GEN2 Technical
+Specification and Service Manual
+Version: 1.0
+
+For support: https://support.opentrons.com
+GitHub Issues: https://github.com/Opentrons/opentrons/issues

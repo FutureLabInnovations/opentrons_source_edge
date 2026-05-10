@@ -55,6 +55,17 @@ def add_parameters(parameters: protocol_api.ParameterContext) -> None:
         ),
         default=True,
     )
+    parameters.add_bool(
+        variable_name="fast_water_fill",
+        display_name="Fast water fill (8-channel)",
+        description=(
+            "Flood every well with water using the Flex 8-channel 50 uL "
+            "pipette (much faster), then over-dispense dye into black "
+            "pixels with the 1-channel. Requires both pipettes to be "
+            "installed. Ignored when 'Fill white wells' is off."
+        ),
+        default=False,
+    )
 
 
 def _parse_qr_grid(parsed_csv: list) -> list:
@@ -116,15 +127,35 @@ def _dispense_into(pipette, source, plate, wells, volume) -> None:
     )
 
 
+def _flood_with_8channel(pipette, source, plate, columns, volume) -> None:
+    """Fill every well of the given 384-plate columns via an 8-ch pipette.
+
+    A Flex 8-channel pipette has 9 mm pitch; on a 384-plate (4.5 mm pitch)
+    each channel addresses every other row. Two passes per column ("A{n}"
+    then "B{n}") cover all 16 rows.
+    """
+    if not columns:
+        return
+    pipette.pick_up_tip()
+    for col in columns:
+        for top_well in (f"A{col}", f"B{col}"):
+            pipette.aspirate(volume, source)
+            pipette.dispense(volume, plate[top_well].top(z=-1))
+            pipette.blow_out(plate[top_well].top(z=-1))
+    pipette.drop_tip()
+
+
 def run(protocol: protocol_api.ProtocolContext) -> None:
     grid = _parse_qr_grid(protocol.params.qr_csv.parse_as_csv())
     black_wells, white_wells = _grid_to_well_lists(grid)
     volume = float(protocol.params.dispense_volume_ul)
     fill_white = bool(protocol.params.fill_white_wells)
+    fast_water = bool(protocol.params.fast_water_fill) and fill_white
 
     protocol.comment(
         f"QR grid: {len(grid)} rows x {len(grid[0])} cols. "
-        f"{len(black_wells)} dye wells, {len(white_wells)} water wells."
+        f"{len(black_wells)} dye wells, {len(white_wells)} water wells. "
+        f"Fast water fill: {fast_water}."
     )
 
     protocol.load_trash_bin("A3")
@@ -135,6 +166,13 @@ def run(protocol: protocol_api.ProtocolContext) -> None:
 
     pipette = protocol.load_instrument(
         "flex_1channel_50", "right", tip_racks=[tiprack_a, tiprack_b]
+    )
+    multi = (
+        protocol.load_instrument(
+            "flex_8channel_50", "left", tip_racks=[tiprack_a, tiprack_b]
+        )
+        if fast_water
+        else None
     )
 
     dye_source = reservoir["A1"]
@@ -151,13 +189,19 @@ def run(protocol: protocol_api.ProtocolContext) -> None:
         display_color="#9CCFFF",
     )
 
-    plate_volume_ul = max(int(volume * (len(black_wells) + len(white_wells))), 1)
+    n_water_wells = PLATE_ROWS * PLATE_COLS if fast_water else len(white_wells)
+    plate_volume_ul = max(int(volume * (len(black_wells) + n_water_wells)), 1)
     dye_load = max(int(volume * len(black_wells) * 1.2) + 500, 500)
-    water_load = max(int(volume * len(white_wells) * 1.2) + 500, 500)
+    water_load = max(int(volume * n_water_wells * 1.2) + 500, 500)
     dye_source.load_liquid(liquid=dye_liquid, volume=min(dye_load, 14000))
     water_source.load_liquid(liquid=water_liquid, volume=min(water_load, 14000))
 
-    if fill_white and white_wells:
+    if fast_water:
+        protocol.comment("Flooding all 384 wells with water (8-channel)...")
+        _flood_with_8channel(
+            multi, water_source, plate, range(1, PLATE_COLS + 1), volume
+        )
+    elif fill_white and white_wells:
         protocol.comment("Dispensing water into white-pixel wells...")
         _dispense_into(pipette, water_source, plate, white_wells, volume)
 

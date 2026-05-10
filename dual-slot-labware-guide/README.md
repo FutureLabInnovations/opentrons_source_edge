@@ -1,237 +1,168 @@
-# Dual-Slot Custom Labware — Option 2: Cutout Fixtures + Addressable Areas
+# Dual-Slot Custom Labware — Labware-File-Only Approach
 
-This folder explains how Opentrons represents labware that physically occupies
-two deck slots, using the Flex deck's "cutout fixture" / "addressable area"
-system. **Nothing in this folder modifies the existing codebase** — the file
-paths cited below are for reference only.
+This folder explains how to make a custom labware that physically spans two
+deck slots **without modifying the engine, the deck definition, or any other
+code in the repo**. The whole solution is one labware JSON file.
 
-## Why this is the right approach
+The file paths cited below are for **reference only** — do not edit them.
 
-The protocol engine does **not** validate labware `xDimension`/`yDimension`
-against a 128×85 mm slot footprint at load time. Conflict prevention is
-slot-level, not geometry-level (see `api/src/opentrons/motion_planning/deck_conflict.py`
-lines 239-268). So if you simply oversize a labware definition and load it
-into one slot, the engine will not know the adjacent slot is physically
-blocked, and a user could load conflicting labware on top of it.
+## Why this works at all
 
-Cutout fixtures + addressable areas are the mechanism the codebase already
-uses for every multi-slot object on the Flex (Thermocycler V2, Trash Bin,
-Waste Chute, Staging Areas). Reusing the pattern means the engine reserves
-both slots automatically and refuses to place anything else there.
+The Opentrons protocol engine does **not** validate a labware's
+`xDimension` / `yDimension` against the 128 × 85 mm slot footprint at load
+time. Conflict checking is slot-level, not geometry-level
+(`api/src/opentrons/motion_planning/deck_conflict.py:239-268`).
+The load-labware command (`api/src/opentrons/protocol_engine/commands/load_labware.py:143-179`)
+checks only that the slot you target isn't already occupied — it never asks
+"does this fit?".
 
-## The three building blocks
+So a labware whose `dimensions` describe a ~256 × 85 mm body will load into a
+single slot without raising an out-of-bounds error. Existing precedent in the
+repo: `shared-data/labware/definitions/2/ev_resin_tips_flex_tall_adapter/1.json`
+already declares 130.5 × 98 mm — larger than a slot — and ships in production.
 
-The Flex deck definition lives at
-`shared-data/deck/definitions/5/ot3_standard.json`. Three concepts there work
-together:
+## What you actually do
 
-### 1. `cutouts`
-Physical mounting points on the deck (e.g. `cutoutA1`, `cutoutB1`,
-`cutoutD3`). Each has an `(x, y, z)` position. There is one cutout per slot.
+1. Write one labware JSON definition.
+2. Set `dimensions.xDimension` / `yDimension` to the real, multi-slot
+   footprint of the labware.
+3. Use `cornerOffsetFromSlot` to control which direction the labware extends
+   away from its anchor slot.
+4. Load it with `protocol.load_labware(name, "C3")` like any other labware.
 
-### 2. `cutoutFixtures`
-What is currently bolted into a cutout. Each entry declares:
+That's it. No deck definition. No cutout fixtures. No engine changes.
 
-- `id` — fixture name
-- `mayMountTo` — which cutouts it can attach to
-- `providesAddressableAreas` — for each cutout it can mount to, the list of
-  addressable-area IDs that become loadable
-- `fixtureGroup` — other fixtures that must be co-mounted (this is the key to
-  reserving multiple cutouts)
-- `height` — fixture's z-extent
+## Worked example: a labware spanning B3 + C3
 
-A given cutout can host **only one** fixture at a time, so mounting a fixture
-on a cutout reserves it.
+You want a labware that anchors at C3 (front-right) and extends backwards to
+cover B3 as well. Total footprint ~128 × 171 mm (two slots stacked in y, plus
+~1 mm gap).
 
-### 3. `addressableAreas` (and `locations`)
-The named places labware can actually be loaded onto. Each has:
-
-- `id` — e.g. `D4`, `thermocyclerModuleV2`, `movableTrashD3`
-- `offsetFromCutoutFixture` — `(x, y, z)` offset from the host cutout's origin
-- `boundingBox` — `xDimension`, `yDimension`, `zDimension` of the area
-
-The engine refuses to load a labware onto an addressable area unless some
-currently-mounted fixture lists that area in `providesAddressableAreas`. This
-is the single chokepoint that makes the system safe.
-
-## Two patterns for a dual-slot labware
-
-There are two patterns already in the codebase. Pick whichever matches your
-geometry.
-
-### Pattern A — Wide addressable area, single cutout (Trash Bin pattern)
-
-Used when the labware mounts into one cutout but its bounding box extends past
-the slot footprint into structurally empty space (a gap between columns, the
-deck edge, etc.) — not into another usable slot.
-
-Reference: `trashBinAdapter` fixture (lines 1136-1160 of `ot3_standard.json`)
-and `movableTrashD3` addressable area (lines 277-289). The bounding box is
-225 × 78 mm and `offsetFromCutoutFixture` is `[-90.25, 4, 0]`. It mounts to a
-single cutout but spans well past one slot's worth of x-space.
-
-This pattern does **not** reserve the adjacent slot's cutout. It only works
-because the space the labware extends into is not itself a usable slot.
-
-### Pattern B — Two cutouts reserved by `fixtureGroup` (Thermocycler pattern)
-
-Used when the labware truly straddles two real slots that would otherwise be
-independently loadable. **This is what most "dual-slot labware" requirements
-actually need.**
-
-Reference: `thermocyclerModuleV2Rear` and `thermocyclerModuleV2Front`
-(`ot3_standard.json` lines 1264-1298).
-
-Mechanics:
-
-- Two paired fixtures, one per cutout. Both have matching `fixtureGroup`
-  entries that say "if I am mounted, the other must be mounted on its cutout
-  too."
-- The "rear" fixture provides **no** addressable areas (`"cutoutA1": []`) — its
-  entire job is to consume the cutout so nothing else can mount there.
-- The "front" fixture provides the **single** addressable area that
-  represents the whole assembly (`"thermocyclerModuleV2"`).
-- That single addressable area has a bounding box and offset chosen to span
-  both slots' footprint.
-
-Result: a protocol that requests the dual-slot labware causes the engine to
-require both cutouts be occupied by the paired fixtures. Anything else that
-tries to load onto either slot is rejected because neither cutout exposes a
-plain `A1` / `B1` addressable area while the pair is mounted.
-
-## Concrete example — a dual-slot labware on B3 + C3
-
-Goal: a custom labware that is ~256 × 85 mm and spans cutouts B3 and C3, with
-its origin at the front-left corner of C3 (the more "front" of the two slots
-on the right column).
-
-The following JSON would be **added** to the Flex deck definition (or a custom
-deck definition that extends it). **Do not edit the existing `ot3_standard.json`
-file in this repo** — copy it to your fork or load a custom deck definition.
-
-### a) Two paired cutout fixtures
+Save the file as `my_dual_slot_labware/1.json` (or upload it as a custom
+labware through the Opentrons app — both produce the same effect). The exact
+path under `shared-data/labware/definitions/2/...` is only relevant if you
+were committing it to the repo, which you said you don't want to.
 
 ```json
 {
-  "id": "myDualSlotFixtureFront",
-  "expectOpentronsModuleSerialNumber": false,
-  "mayMountTo": ["cutoutC3"],
-  "displayName": "My Dual-Slot Labware (front half)",
-  "providesAddressableAreas": {
-    "cutoutC3": ["myDualSlotArea"]
+  "ordering": [["A1"]],
+  "brand": {
+    "brand": "Custom",
+    "brandId": ["MY-DUAL-001"]
   },
-  "fixtureGroup": {
-    "cutoutC3": [
-      {
-        "cutoutC3": "myDualSlotFixtureFront",
-        "cutoutB3": "myDualSlotFixtureRear"
-      }
-    ]
+  "metadata": {
+    "displayName": "My Dual-Slot Labware",
+    "displayCategory": "wellPlate",
+    "displayVolumeUnits": "µL",
+    "tags": []
   },
-  "height": 0
-},
-{
-  "id": "myDualSlotFixtureRear",
-  "expectOpentronsModuleSerialNumber": false,
-  "mayMountTo": ["cutoutB3"],
-  "displayName": "My Dual-Slot Labware (rear half)",
-  "providesAddressableAreas": {
-    "cutoutB3": []
-  },
-  "fixtureGroup": {
-    "cutoutB3": [
-      {
-        "cutoutC3": "myDualSlotFixtureFront",
-        "cutoutB3": "myDualSlotFixtureRear"
-      }
-    ]
-  },
-  "height": 0
-}
-```
-
-The `Rear` half exposes no addressable areas — it exists only to occupy
-cutoutB3 so no other fixture (and therefore no labware) can mount there.
-
-### b) One wide addressable area
-
-Add to the deck definition's `locations.addressableAreas` list:
-
-```json
-{
-  "id": "myDualSlotArea",
-  "areaType": "slot",
-  "offsetFromCutoutFixture": [0.0, 0.0, 0.0],
-  "matingSurfaceUnitVector": [-1, 1, -1],
-  "boundingBox": {
+  "dimensions": {
     "xDimension": 128.0,
     "yDimension": 171.0,
-    "zDimension": 0
+    "zDimension": 25.0
   },
-  "displayName": "Dual-Slot B3+C3",
-  "features": {},
-  "compatibleModuleTypes": [],
-  "orientation": null
+  "wells": {
+    "A1": {
+      "depth": 20.0,
+      "totalLiquidVolume": 1000,
+      "shape": "circular",
+      "diameter": 10.0,
+      "x": 64.0,
+      "y": 85.5,
+      "z": 5.0
+    }
+  },
+  "groups": [
+    {
+      "metadata": {},
+      "wells": ["A1"]
+    }
+  ],
+  "parameters": {
+    "format": "irregular",
+    "quirks": [],
+    "isTiprack": false,
+    "isMagneticModuleCompatible": false,
+    "loadName": "my_dual_slot_labware"
+  },
+  "namespace": "custom",
+  "version": 1,
+  "schemaVersion": 2,
+  "cornerOffsetFromSlot": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+  }
 }
 ```
 
-`yDimension` ≈ 2 × 85 mm + the 1 mm gap between slots. Adjust to match real
-slot spacing on your deck definition. The offset places the area's origin at
-cutoutC3's anchor.
+### What the numbers do
 
-### c) The labware definition itself
+| Field | Effect |
+| --- | --- |
+| `dimensions.xDimension` | The labware's real x-extent. Used by visualizers, deck maps, the labware-position-check, and tip-drop fallback logic. Set to the real footprint. |
+| `dimensions.yDimension` | Same, in y. For a B3+C3 span, ~171 mm (2 × 85 + 1 mm gap). |
+| `dimensions.zDimension` | Real height of the labware. |
+| `cornerOffsetFromSlot.{x,y}` | Shifts the labware origin relative to the front-left of the anchor slot. Use this to control which adjacent slot the labware extends into. See "Direction control" below. |
+| `wells[*].x`, `wells[*].y` | Well positions are measured from the labware's own front-left corner, **not** from the slot. So a well at the geometric centre of a 128 × 171 mm labware sits at (64, 85.5). |
 
-Your labware JSON (the file under `shared-data/labware/definitions/2/...`)
-keeps its existing well layout but its `dimensions.xDimension` /
-`yDimension` reflect the real ~128 × 171 mm footprint. Nothing special is
-needed there — it's the deck definition that does the multi-slot work.
+### Direction control with `cornerOffsetFromSlot`
 
-### d) Loading it from a protocol
+The slot's anchor point is its front-left corner. By default the labware's
+front-left aligns there and the labware extends right (+x) and back (+y).
 
-```python
-labware = protocol.load_labware(
-    "my_dual_slot_labware",
-    location="C3",          # the "front" cutout, where the addressable area lives
-)
-```
+- To extend **back** from C3 into B3 (the example above): keep `y = 0` and use
+  the natural y-extent. The labware extends in +y, which on the Flex moves
+  toward the rear of the deck — that's B3.
+- To extend **forward** from B3 into C3: set
+  `cornerOffsetFromSlot.y = -86` so the labware origin sits in front of the
+  anchor slot.
+- To extend **left** or **right** between columns 1↔2 or 2↔3: shift `x`
+  similarly (a slot is 128 mm wide).
 
-The robot software resolves "C3" → addressable area `myDualSlotArea` (because
-the `myDualSlotFixtureFront` is mounted on cutoutC3) and verifies that
-`myDualSlotFixtureRear` is mounted on cutoutB3 because the `fixtureGroup`
-constraint demands it. If the deck configuration does not have both halves
-mounted, the load fails before any motion is planned.
+Always sanity-check on the deck map in Protocol Designer or the app before
+running on hardware — the offset sign conventions are easy to flip.
 
-## What this prevents at runtime
+## Caveats — read these
 
-With Pattern B in place:
+The engine does not know the second slot is physically blocked. That has
+real consequences:
 
-- A second labware cannot be loaded on B3 — neither `B3` nor any other
-  addressable area is provided by the rear fixture.
-- A second labware cannot be loaded on C3 — only `myDualSlotArea` is provided,
-  and that's already taken by your dual-slot labware.
-- Tip-drop / waste-disposal logic that picks fallback locations (see comment
-  at `api/src/opentrons/protocol_engine/state/geometry.py:1339`) will see the
-  big bounding box and route around it.
-- Deck-conflict checks (`api/src/opentrons/motion_planning/deck_conflict.py`)
-  see both cutouts as occupied.
+1. **You must not load anything else in the covered slot.** The engine will
+   happily let `protocol.load_labware(..., "B3")` succeed even though your
+   dual-slot labware is already covering B3 from C3. There is no warning.
+   Protect against this in your own protocol code (e.g. comment, lint, or
+   simply leave that slot empty by convention).
+2. **Deck-conflict checks won't fire.** The motion planner sees one slot
+   occupied (your anchor slot), not two.
+3. **Move-labware / off-deck moves**: if you reposition this labware
+   mid-run, the engine still tracks only one slot. Plan accordingly.
+4. **Pipette/gripper paths**: motion planning uses bounding boxes for
+   tip-drop fallback and similar; oversized dimensions help here, but
+   collision-avoidance during arbitrary moves is still the protocol
+   author's responsibility.
+5. **App / Protocol Designer rendering**: most tools draw labware using
+   `dimensions` so the visual will correctly show the labware spilling into
+   the second slot. Some older tooling may clip — verify visually.
 
-## Files in the codebase you'll want to read (don't edit)
+If any of those caveats matter, the only way to get the engine to actively
+reserve both slots is the cutout-fixture / `fixtureGroup` route used by the
+Thermocycler V2. That requires deck-definition edits, which you've ruled out.
+
+## Files in the codebase you may want to read (don't edit)
 
 | Purpose | Path |
 | --- | --- |
-| Flex deck v5 (cutouts, fixtures, addressable areas) | `shared-data/deck/definitions/5/ot3_standard.json` |
-| Load-labware command (where addressable areas are resolved) | `api/src/opentrons/protocol_engine/commands/load_labware.py` |
-| Deck-conflict logic | `api/src/opentrons/motion_planning/deck_conflict.py` |
-| Geometry / bounding-box reasoning | `api/src/opentrons/protocol_engine/state/geometry.py` |
-| Existing dual-cutout precedent | `thermocyclerModuleV2Rear` / `thermocyclerModuleV2Front` in `ot3_standard.json` (lines 1264-1298) |
+| Labware schema v2 reference (real oversized labware in production) | `shared-data/labware/definitions/2/ev_resin_tips_flex_tall_adapter/1.json` |
+| Load-labware command | `api/src/opentrons/protocol_engine/commands/load_labware.py` |
+| Deck-conflict logic (slot-level only) | `api/src/opentrons/motion_planning/deck_conflict.py` |
+| Geometry / bounding-box logic | `api/src/opentrons/protocol_engine/state/geometry.py` |
 
 ## Summary
 
-1. Multi-slot labware is expressed in the **deck definition**, not the labware
-   definition.
-2. Use a pair of cutout fixtures linked by `fixtureGroup` to lock down both
-   cutouts.
-3. Have the "primary" fixture expose one wide addressable area; have the
-   "secondary" fixture expose nothing.
-4. Load your labware onto the primary slot; the engine handles reservation
-   of the second slot for free.
+- A labware definition with oversized `xDimension` / `yDimension` loads
+  without an out-of-bounds error.
+- Use `cornerOffsetFromSlot` to point the overhang at the desired adjacent
+  slot.
+- The trade-off is that the engine doesn't auto-reserve the covered slot —
+  your protocol must leave it empty.

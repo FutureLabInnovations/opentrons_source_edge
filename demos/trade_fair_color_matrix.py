@@ -1,32 +1,52 @@
 """
-OT-2 Trade Fair Demo  -  Color Mixing Matrix
-=============================================
+OT-2 Trade Fair Demo  -  "A Day in the Lab" in Color
+====================================================
 
-Autonomous, eye-catching demo for trade-fair audiences. Paints six 96-well
-plates with food-dye gradients to produce a different "color matrix" on each
-plate. Total runtime: ~2 hours.
+Autonomous, eye-catching demo for trade-fair audiences. Each of six plates
+showcases a real, recognizable laboratory technique using food-coloring as
+the "sample". Total runtime ~2 hours.
+
+The workflows cycle through three classic techniques that any wet-lab
+visitor will recognize, executed back-to-back:
+
+  1. Serial Dilution / Standard Curve preparation
+       The bread-and-butter of any quantitative assay. A 1:2 serial dilution
+       is performed across columns 1 -> 11, with column 12 left as the
+       no-sample blank. Rows are loaded with four different "samples"
+       (red, yellow, blue, and a red+blue mix) so each plate shows four
+       horizontal color gradients.
+
+  2. Combinatorial Dose-Response Matrix (drug-synergy checkerboard)
+       Two "compounds" (red across columns, blue down rows) are titrated
+       against each other to fill the plate with 96 unique combinations -
+       the same layout used for Bliss / Loewe synergy studies. A yellow
+       indicator pass at the end mimics adding a viability dye.
+
+  3. Multiplex Plate Map (assay layout)
+       Different reagents are distributed into defined column blocks, the
+       way a multiplex assay or compound library is mapped onto a plate.
+       Single-channel "controls" are spotted into specific wells.
 
 Pipettes (no modules used):
-  - left  : P300 Single-Channel GEN2  -> precision color accents (yellow rows)
-  - right : P300 Multi-Channel  GEN2  -> fast column fills (red+blue gradients)
-            and 8-tip wash step in the bulk water reservoir
+  - left  : P300 Single-Channel GEN2  -> sample loading, controls, indicators
+  - right : P300 Multi-Channel  GEN2  -> bulk fills, serial dilution transfers
 
-Tip strategy (per user spec):
-  - Single-channel rack is sectioned by color so a tip never sees more than
-    one color:
+Tip strategy (real lab practice):
+  - Single-channel rack is sectioned by reagent so a tip never sees more
+    than one color (no cross-contamination):
         cols 1-3  -> red tips
         cols 4-6  -> yellow tips
         cols 7-9  -> blue tips
         cols 10-12-> wash/water tips
   - Multi-channel uses fresh tip columns for the first WASH_TRIGGER_PLATE
-    plates, then switches to wash-and-reuse mode: tips are dipped 3x in the
-    large water reservoir between colors and returned to their rack so the
-    same column can be picked up again.
+    plates, then switches to wash-and-reuse mode (3x rinse in the bulk
+    water reservoir between colors, returned to the rack for re-use).
 
 Runtime parameters (set in the Opentrons app before starting the run):
-  * Plate format -- "96-well only", "384-well only", or "Both (3 of each)"
-  * Per-plate viewing delay (s) -- pause length after each finished plate;
-    bump up to extend total runtime.
+  * Per-plate viewing delay (s) - pause after each finished plate so
+    visitors can admire the result. Lever for hitting >= 2 hr runtime.
+  * Incubation delay per plate (s) - mimics a real assay incubation
+    between plates (set 0 to skip).
 
 Materials needed
 ----------------
@@ -35,33 +55,38 @@ Hardware (already on robot):
   * P300 Multi-Channel GEN2  (right mount)
   * P300 Single-Channel GEN2 (left mount)
 
-Labware (slots 2,5,6,7,8,11 hold plates; mix depends on RTP):
-  * up to 6 x corning_96_wellplate_360ul_flat   (clear, flat-bottom)
-  * up to 6 x corning_384_wellplate_112ul_flat  (clear, flat-bottom)
-  * 1 x nest_12_reservoir_15ml            (slot 4: red, yellow, blue, water, ...)
-  * 1 x nest_1_reservoir_195ml            (slot 9: bulk water for wash station)
-  * 3 x opentrons_96_tiprack_300ul        (slots 1,3,10)
+Labware:
+  * 6 x armadillo_96_wellplate_200ul_pcr_full_skirt  (Thermo Fisher Armadillo
+        96-well 200 uL PCR plate, slots 2, 5, 6, 7, 8, 11)
+  * 1 x nest_12_reservoir_15ml            (slot 4: dye stocks + diluent)
+  * 1 x nest_1_reservoir_195ml            (slot 9: bulk water for tip wash)
+  * 3 x opentrons_96_tiprack_300ul        (slots 1, 3, 10)
 
 Reagents (food-grade, non-hazardous):
-  * Red, yellow, and blue food coloring (~20 mL each, diluted 1:5 in water
+  * Red, yellow, and blue food coloring (~25 mL each, diluted 1:5 in water
     in their reservoir lanes for vivid but not over-saturated color)
-  * Distilled water for diluent and the wash station (~250 mL total)
+  * Distilled water for the diluent lane and wash station (~250 mL total)
 
 Reservoir layout (NEST 12-well, slot 4):
    A1=red  A2=yellow  A3=blue  A4=diluent (water)  A5..A12=spare/waste
 
 Setup tip:
-  Place a sheet of white paper or a small LED light pad under the OT-2 deck.
-  The clear flat-bottom plates light up beautifully and the gradients are
-  visible from across the room.
+  Place a white sheet or LED light pad under the OT-2 deck. The Armadillo's
+  conical wells light up beautifully and the gradients read clearly from
+  across the room.
 """
 
 from opentrons import protocol_api
 
 metadata = {
-    "protocolName": "Trade Fair Color Matrix",
+    "protocolName": "Trade Fair - A Day in the Lab (Color Edition)",
     "author": "Opentrons Demo",
-    "description": "Autonomous 2-hour colorful demo using P300 multi + P300 single",
+    "description": (
+        "Autonomous ~2-hour OT-2 demo using P300 multi + P300 single. "
+        "Cycles through serial dilution, dose-response matrix, and "
+        "multiplex plate-layout workflows on Thermo Fisher Armadillo "
+        "96-well 200 uL plates."
+    ),
 }
 
 # 2.18+ is required for runtime parameters (add_parameters / protocol.params).
@@ -76,7 +101,7 @@ requirements = {"robotType": "OT-2", "apiLevel": "2.18"}
 RED, YELLOW, BLUE, DILUENT = "A1", "A2", "A3", "A4"
 
 # Single-channel tip-rack sections (1-indexed column ranges, inclusive).
-# Each color only ever uses tips from its own section.
+# Each reagent only ever uses tips from its own section.
 TIP_SECTIONS = {
     "red":    (1, 3),
     "yellow": (4, 6),
@@ -84,84 +109,17 @@ TIP_SECTIONS = {
     "wash":   (10, 12),
 }
 
-# After this plate index (0-based), the multi-channel switches from
-# "fresh tips per color" to "wash-and-reuse" mode.
+# After this plate index (0-based), multi-channel switches to wash-and-reuse.
 WASH_TRIGGER_PLATE = 2
 
 # P300 lower limit; any computed volume below this is skipped.
 MIN_DISPENSE_UL = 20
 
-# Per-plate-format configuration. The 384-well plate has half the well volume
-# of the 96-well plate (112 uL vs 360 uL), denser geometry (16 rows / 24 cols),
-# and an 8-channel pipette can only reach every-other row per aim, so it
-# requires two aim rows ("A", "B") to address all 16 rows.
-PLATE_CONFIGS = {
-    "96": {
-        "load_name":      "corning_96_wellplate_360ul_flat",
-        "n_rows":         8,
-        "n_cols":         12,
-        "base_water_ul":  60,
-        "max_primary_ul": 60,
-        "max_yellow_ul":  50,
-        "multi_aim_rows": ["A"],
-    },
-    "384": {
-        "load_name":      "corning_384_wellplate_112ul_flat",
-        "n_rows":         16,
-        "n_cols":         24,
-        # Tighter volumes to fit the 112 uL well: 20 + 45 + 40 = 105 uL max.
-        "base_water_ul":  20,
-        "max_primary_ul": 45,
-        "max_yellow_ul":  40,
-        "multi_aim_rows": ["A", "B"],
-    },
-}
-
-# Six plate slots; this maps the plate_format RTP to a list of plate kinds
-# (one per slot, in the order slots [2, 5, 6, 7, 8, 11] are filled).
-FORMAT_TO_KINDS = {
-    "96":   ["96"]  * 6,
-    "384":  ["384"] * 6,
-    "both": ["96", "96", "96", "384", "384", "384"],
-}
-
-
-# ---------------------------------------------------------------------------
-# 3x5 pixel font for 384-well text rendering ("FUTURE LAB INNOVATIONS")
-# ---------------------------------------------------------------------------
-# Each glyph is 5 rows tall and 3 columns wide. Letters are spaced one column
-# apart, so each character occupies 4 columns total (3 + gap). With 24 plate
-# columns we fit up to six 3-wide glyphs per line; with 16 plate rows we fit
-# two lines stacked vertically.
-FONT_3x5 = {
-    "F": ["###", "#..", "##.", "#..", "#.."],
-    "U": ["#.#", "#.#", "#.#", "#.#", "###"],
-    "T": ["###", ".#.", ".#.", ".#.", ".#."],
-    "R": ["##.", "#.#", "##.", "#.#", "#.#"],
-    "E": ["###", "#..", "##.", "#..", "###"],
-    "L": ["#..", "#..", "#..", "#..", "###"],
-    "A": [".#.", "#.#", "###", "#.#", "#.#"],
-    "B": ["##.", "#.#", "##.", "#.#", "##."],
-    "I": ["###", ".#.", ".#.", ".#.", "###"],
-    "N": ["#.#", "##.", "###", ".##", "#.#"],
-    "O": ["###", "#.#", "#.#", "#.#", "###"],
-    "V": ["#.#", "#.#", "#.#", "#.#", ".#."],
-    "S": ["###", "#..", "###", "..#", "###"],
-    " ": ["...", "...", "...", "...", "..."],
-}
-
-# Two-line layout per 384-well plate. Together these spell
-# "FUTURE LAB INNOVATIONS" across two consecutive 384 plates.
-TEXT_LINES_384 = [
-    ("FUTURE", "LAB"),
-    ("INNOVA", "TIONS"),
-]
-
-# Volume of the dye dispensed into each "lit" pixel on a 384 text plate.
-# 60 uL is well above MIN_DISPENSE_UL and gives a visibly-saturated letter
-# on top of the 20 uL water base (total 80 uL, well below the 112 uL well
-# capacity).
-TEXT_PIXEL_UL = 60
+# Plate geometry (Thermo Fisher Armadillo 96 Well Plate, 200 uL).
+PLATE_LOAD_NAME = "armadillo_96_wellplate_200ul_pcr_full_skirt"
+N_ROWS, N_COLS  = 8, 12
+WELL_MAX_UL     = 200
+WORK_VOL_UL     = 100   # standard per-well working volume
 
 
 # ---------------------------------------------------------------------------
@@ -169,30 +127,29 @@ TEXT_PIXEL_UL = 60
 # ---------------------------------------------------------------------------
 
 def add_parameters(parameters):
-    parameters.add_str(
-        variable_name="plate_format",
-        display_name="Plate format",
-        description=(
-            "Which plate format to demo. 'Both' loads three of each "
-            "side-by-side on the deck."
-        ),
-        default="96",
-        choices=[
-            {"display_name": "96-well only (6 plates)",  "value": "96"},
-            {"display_name": "384-well only (6 plates)", "value": "384"},
-            {"display_name": "Both (3 x 96 + 3 x 384)",  "value": "both"},
-        ],
-    )
     parameters.add_int(
         variable_name="viewing_delay_s",
-        display_name="Per-plate viewing delay (s)",
+        display_name="Per-plate viewing delay",
         description=(
             "Pause after each finished plate so visitors can admire the "
             "result. Increase to extend total runtime."
         ),
-        default=90,
+        default=60,
         minimum=0,
         maximum=600,
+        unit="s",
+    )
+    parameters.add_int(
+        variable_name="incubation_delay_s",
+        display_name="Per-plate incubation delay",
+        description=(
+            "Mimics a real assay incubation between plates (e.g. letting a "
+            "standard curve settle, or a colorimetric reaction develop). "
+            "Set to 0 to skip."
+        ),
+        default=120,
+        minimum=0,
+        maximum=900,
         unit="s",
     )
 
@@ -203,35 +160,27 @@ def add_parameters(parameters):
 
 def run(protocol: protocol_api.ProtocolContext):
 
-    plate_format    = protocol.params.plate_format
-    viewing_delay_s = protocol.params.viewing_delay_s
-    plate_kinds     = FORMAT_TO_KINDS[plate_format]
+    viewing_delay_s    = protocol.params.viewing_delay_s
+    incubation_delay_s = protocol.params.incubation_delay_s
 
     # Labware ---------------------------------------------------------------
     reservoir    = protocol.load_labware("nest_12_reservoir_15ml",   4)
     wash_station = protocol.load_labware("nest_1_reservoir_195ml",   9)
 
-    # Load each plate slot according to its kind from the RTP.
-    plates = []
-    for i, slot in enumerate([2, 5, 6, 7, 8, 11]):
-        kind_name = plate_kinds[i]
-        cfg = PLATE_CONFIGS[kind_name]
-        plate = protocol.load_labware(
-            cfg["load_name"], slot, f"plate {i + 1} ({kind_name}-well)"
-        )
-        plates.append((plate, cfg, kind_name))
+    plates = [
+        protocol.load_labware(PLATE_LOAD_NAME, slot, f"plate {i + 1}")
+        for i, slot in enumerate([2, 5, 6, 7, 8, 11])
+    ]
 
     rack_single  = protocol.load_labware("opentrons_96_tiprack_300ul", 1, "single tips")
     rack_multi_a = protocol.load_labware("opentrons_96_tiprack_300ul", 3, "multi tips A")
     rack_multi_b = protocol.load_labware("opentrons_96_tiprack_300ul", 10, "multi tips B")
 
     # Pipettes --------------------------------------------------------------
-    p300s = protocol.load_instrument(
-        "p300_single_gen2", "left", tip_racks=[rack_single]
-    )
-    p300m = protocol.load_instrument(
-        "p300_multi_gen2",  "right", tip_racks=[rack_multi_a, rack_multi_b]
-    )
+    p300s = protocol.load_instrument("p300_single_gen2", "left",
+                                     tip_racks=[rack_single])
+    p300m = protocol.load_instrument("p300_multi_gen2",  "right",
+                                     tip_racks=[rack_multi_a, rack_multi_b])
 
     p300s.flow_rate.aspirate = 100
     p300s.flow_rate.dispense = 200
@@ -239,14 +188,10 @@ def run(protocol: protocol_api.ProtocolContext):
     p300m.flow_rate.dispense = 200
 
     # Sectioned tip pools for the single-channel pipette --------------------
-    # Each color reserves a contiguous column range so a tip never sees more
-    # than one color.
     def section_wells(start_col, end_col):
-        return [
-            f"{row}{col}"
-            for col in range(start_col, end_col + 1)
-            for row in "ABCDEFGH"
-        ]
+        return [f"{row}{col}"
+                for col in range(start_col, end_col + 1)
+                for row in "ABCDEFGH"]
 
     tip_pools = {color: section_wells(s, e) for color, (s, e) in TIP_SECTIONS.items()}
     tip_index = {color: 0 for color in tip_pools}
@@ -254,23 +199,19 @@ def run(protocol: protocol_api.ProtocolContext):
     def pick_single_tip(color: str) -> None:
         if tip_index[color] >= len(tip_pools[color]):
             raise RuntimeError(
-                f"Out of {color} tips - section exhausted (used "
-                f"{tip_index[color]}/{len(tip_pools[color])})."
+                f"Out of {color} tips - section exhausted "
+                f"({tip_index[color]}/{len(tip_pools[color])})."
             )
         well_name = tip_pools[color][tip_index[color]]
         tip_index[color] += 1
         p300s.pick_up_tip(rack_single.wells_by_name()[well_name])
 
     # Multi-channel tip management -----------------------------------------
-    # In fresh mode (early plates) each color gets a brand-new tip column,
-    # which is dropped after use. In wash mode (later plates) the same column
-    # of tips is washed in the bulk water reservoir between colors and
-    # returned to its rack so it can be picked up again.
     multi_columns = []
     for rack in (rack_multi_a, rack_multi_b):
         for col in range(12):
             multi_columns.append(rack.columns()[col][0])
-    multi_idx = {"next": 0}  # mutable counter
+    multi_idx = {"next": 0}
 
     def multi_pick_fresh():
         if multi_idx["next"] >= len(multi_columns):
@@ -287,202 +228,297 @@ def run(protocol: protocol_api.ProtocolContext):
             p300m.dispense(250, wash_station["A1"].top(-3))
         p300m.blow_out(wash_station["A1"].top())
 
-    # ----------------------------------------------------------------------
-    # Per-plate painting (works for both 96- and 384-well plates)
-    # ----------------------------------------------------------------------
-    def primary_volume(col: int, n_cols: int, max_ul: int, decreasing: bool) -> int:
-        # Linear ramp across the plate's columns. `decreasing=True` peaks at
-        # col 0; otherwise peaks at the last column. Volumes below the
-        # pipette's safe minimum are returned as 0 (skipped).
-        denom = max(1, n_cols - 1)
-        idx = (denom - col) if decreasing else col
-        v = round(max_ul * idx / denom)
-        return v if v >= MIN_DISPENSE_UL else 0
-
-    def yellow_volume(row_idx: int, n_rows: int, max_ul: int) -> int:
-        denom = max(1, n_rows - 1)
-        v = round(max_ul * row_idx / denom)
-        return v if v >= MIN_DISPENSE_UL else 0
-
-    def wells_for_pattern(pattern: str, row_idx: int, n_cols: int):
-        # Returns the column indices (0..n_cols-1) that get a yellow accent
-        # for a given row in this pattern.
-        if pattern == "checker":
-            return list(range(row_idx % 2, n_cols, 2))
-        if pattern == "stripes":
-            return list(range(0, n_cols, 3))
-        if pattern == "diagonal":
-            return [(c + row_idx) % n_cols for c in range(0, n_cols, 2)]
-        return list(range(n_cols))  # default: every column
-
-    def paint_matrix_plate(plate, cfg, kind_name: str, plate_idx: int,
-                           pattern: str, reverse_primary: bool):
-        wash_mode = plate_idx >= WASH_TRIGGER_PLATE
-        n_rows = cfg["n_rows"]
-        n_cols = cfg["n_cols"]
-        aim_rows = cfg["multi_aim_rows"]
-        base_ul    = cfg["base_water_ul"]
-        primary_ul = cfg["max_primary_ul"]
-        yellow_ul  = cfg["max_yellow_ul"]
-
-        protocol.comment(
-            f"=== Plate {plate_idx + 1} ({kind_name}-well matrix) | pattern={pattern} | "
-            f"reverse={reverse_primary} | wash_mode={wash_mode} ==="
-        )
-
-        # Helper: dispense `vol` of `source` into every (aim_row, col) pair.
-        # For 96-well aim_rows=["A"]; for 384-well aim_rows=["A","B"] so each
-        # column gets two passes (covering all 16 rows via 8-channel offsets).
-        def multi_paint(source, vol_for_col):
-            for col in range(n_cols):
-                v = vol_for_col(col)
-                if v == 0:
-                    continue
-                for aim in aim_rows:
-                    target = plate.wells_by_name()[f"{aim}{col + 1}"]
-                    p300m.aspirate(v, source)
-                    p300m.dispense(v, target.top(-3))
-
-        def finish_multi():
-            if wash_mode:
-                multi_wash_in_reservoir()
-                p300m.return_tip()
-            else:
-                p300m.drop_tip()
-
-        # 1) Multi-channel: water base in every column ---------------------
-        multi_pick_fresh()
-        multi_paint(reservoir[DILUENT], lambda c: base_ul)
-        finish_multi()
-
-        # 2) Multi-channel: red gradient across columns --------------------
-        multi_pick_fresh()
-        multi_paint(
-            reservoir[RED],
-            lambda c: primary_volume(c, n_cols, primary_ul, decreasing=not reverse_primary),
-        )
-        finish_multi()
-
-        # 3) Multi-channel: blue gradient across columns -------------------
-        multi_pick_fresh()
-        multi_paint(
-            reservoir[BLUE],
-            lambda c: primary_volume(c, n_cols, primary_ul, decreasing=reverse_primary),
-        )
-        finish_multi()
-
-        # 4) Single-channel: yellow row accents ----------------------------
-        # One fresh yellow-section tip per plate.
-        pick_single_tip("yellow")
-        rows = "ABCDEFGHIJKLMNOP"[:n_rows]
-        for row_idx, row_letter in enumerate(rows):
-            v = yellow_volume(row_idx, n_rows, yellow_ul)
-            if v == 0:
-                continue
-            for col in wells_for_pattern(pattern, row_idx, n_cols):
-                target = plate.wells_by_name()[f"{row_letter}{col + 1}"]
-                p300s.aspirate(v, reservoir[YELLOW])
-                p300s.dispense(v, target.top(-3))
-        p300s.drop_tip()
-
-        # (Viewing delay handled by the outer dispatcher.)
-
-    # ----------------------------------------------------------------------
-    # Per-plate text rendering for 384-well plates
-    # ----------------------------------------------------------------------
-    def paint_text_plate(plate, cfg, plate_idx: int,
-                         top_word: str, bottom_word: str):
-        wash_mode = plate_idx >= WASH_TRIGGER_PLATE
-        n_rows  = cfg["n_rows"]      # 16
-        n_cols  = cfg["n_cols"]      # 24
-        aim_rows = cfg["multi_aim_rows"]
-        base_ul = cfg["base_water_ul"]
-
-        protocol.comment(
-            f"=== Plate {plate_idx + 1} (384-well text: '{top_word}' / "
-            f"'{bottom_word}') | wash_mode={wash_mode} ==="
-        )
-
-        # 1) Multi-channel: water base across all 24 columns x 2 aim rows.
-        multi_pick_fresh()
-        for col in range(n_cols):
-            for aim in aim_rows:
-                target = plate.wells_by_name()[f"{aim}{col + 1}"]
-                p300m.aspirate(base_ul, reservoir[DILUENT])
-                p300m.dispense(base_ul, target.top(-3))
+    def finish_multi(wash_mode: bool):
         if wash_mode:
             multi_wash_in_reservoir()
             p300m.return_tip()
         else:
             p300m.drop_tip()
 
-        # 2) Single-channel: paint each text line in BLUE dye.
-        # Top line at rows 2-6, bottom line at rows 9-13. Both vertically
-        # well-centered within the 16-row plate (~2 rows margin top/bottom,
-        # 2 rows gap between lines).
-        rows_alphabet = "ABCDEFGHIJKLMNOP"
+    # ----------------------------------------------------------------------
+    # Workflow 1: Serial Dilution / Standard Curve
+    # ----------------------------------------------------------------------
+    # Real lab practice:
+    #   * Load 50 uL of diluent into columns 2-12 (the "dilution wells").
+    #   * Load 100 uL of stock sample into column 1, four samples in pairs of
+    #     rows: red (A,B), yellow (C,D), blue (E,F), and a red+blue purple
+    #     mix (G,H).
+    #   * Multi-channel performs a 1:2 serial dilution across columns 1->11,
+    #     mixing at each step. Column 12 is left as the blank.
+    #   * Result: four horizontal color gradients running across the plate.
+    def workflow_serial_dilution(plate, plate_idx: int, variant: str):
+        wash_mode = plate_idx >= WASH_TRIGGER_PLATE
+        diluent_ul = 50      # pre-loaded diluent in cols 2..12
+        stock_ul   = 100     # initial sample volume in col 1
+        xfer_ul    = 50      # 1:2 transfer volume
+        mix_ul     = 50
+        mix_reps   = 3
 
-        def render_line(text: str, row_offset: int):
-            text = text.upper()
-            glyph_width = 3
-            gap = 1
-            stride = glyph_width + gap
-            text_width = len(text) * stride - gap if text else 0
-            col_offset = max(0, (n_cols - text_width) // 2)
-            for char_idx, ch in enumerate(text):
-                glyph = FONT_3x5.get(ch, FONT_3x5[" "])
-                base_col = col_offset + char_idx * stride
-                for r in range(5):
-                    for c in range(glyph_width):
-                        if glyph[r][c] != "#":
-                            continue
-                        plate_row = row_offset + r
-                        plate_col = base_col + c
-                        if not (0 <= plate_row < n_rows and 0 <= plate_col < n_cols):
-                            continue
-                        target = plate.wells_by_name()[
-                            f"{rows_alphabet[plate_row]}{plate_col + 1}"
-                        ]
-                        p300s.aspirate(TEXT_PIXEL_UL, reservoir[BLUE])
-                        p300s.dispense(TEXT_PIXEL_UL, target.top(-3))
+        protocol.comment(
+            f"=== Plate {plate_idx + 1} | SERIAL DILUTION ({variant}) ==="
+        )
 
-        # Use the BLUE-section single-channel tips (one tip for the full plate;
-        # both lines share it since blue only ever sees blue).
+        # 1) Multi-channel: pre-load diluent into columns 2..12.
+        multi_pick_fresh()
+        for col in range(1, N_COLS):
+            p300m.aspirate(diluent_ul, reservoir[DILUENT])
+            p300m.dispense(diluent_ul, plate.columns()[col][0].bottom(2))
+        finish_multi(wash_mode)
+
+        # 2) Single-channel: load 4 different stock samples into column 1.
+        #    The pair-of-rows layout means each "sample" produces two
+        #    identical horizontal gradients (real labs run technical
+        #    replicates this way).
+        if variant == "RYB+purple":
+            sample_layout = [
+                ("red",    ["A1", "B1"], stock_ul,  None),
+                ("yellow", ["C1", "D1"], stock_ul,  None),
+                ("blue",   ["E1", "F1"], stock_ul,  None),
+                # Purple = half-stock red then half-stock blue (mixed below).
+                ("red",    ["G1", "H1"], stock_ul // 2, "blue_addition"),
+            ]
+        else:  # "RYB+orange": orange = red + yellow
+            sample_layout = [
+                ("red",    ["A1", "B1"], stock_ul,  None),
+                ("blue",   ["C1", "D1"], stock_ul,  None),
+                ("yellow", ["E1", "F1"], stock_ul,  None),
+                ("red",    ["G1", "H1"], stock_ul // 2, "yellow_addition"),
+            ]
+
+        color_to_lane = {"red": RED, "yellow": YELLOW, "blue": BLUE}
+        for color, wells, vol, follow_up in sample_layout:
+            pick_single_tip(color)
+            for w in wells:
+                p300s.aspirate(vol, reservoir[color_to_lane[color]])
+                p300s.dispense(vol, plate.wells_by_name()[w].bottom(2))
+            p300s.drop_tip()
+            if follow_up == "blue_addition":
+                pick_single_tip("blue")
+                for w in wells:
+                    p300s.aspirate(stock_ul // 2, reservoir[BLUE])
+                    p300s.dispense(stock_ul // 2, plate.wells_by_name()[w].bottom(2))
+                    p300s.mix(2, mix_ul, plate.wells_by_name()[w].bottom(2))
+                p300s.drop_tip()
+            elif follow_up == "yellow_addition":
+                pick_single_tip("yellow")
+                for w in wells:
+                    p300s.aspirate(stock_ul // 2, reservoir[YELLOW])
+                    p300s.dispense(stock_ul // 2, plate.wells_by_name()[w].bottom(2))
+                    p300s.mix(2, mix_ul, plate.wells_by_name()[w].bottom(2))
+                p300s.drop_tip()
+
+        # 3) Multi-channel: 1:2 serial dilution across columns 1 -> 11.
+        #    A new pair of tips for the dilution (these will see all four
+        #    sample colors, so cannot be re-used for any other color step).
+        multi_pick_fresh()
+        for col in range(N_COLS - 2):  # transfers from col 0..10 into col 1..11
+            src = plate.columns()[col][0].bottom(2)
+            dst = plate.columns()[col + 1][0].bottom(2)
+            p300m.aspirate(xfer_ul, src)
+            p300m.dispense(xfer_ul, dst)
+            p300m.mix(mix_reps, mix_ul, dst)
+            p300m.blow_out(dst.top(-2))
+        # Final tip-off: dilution tips are saturated with mixed dye, so
+        # don't return to rack even in wash mode.
+        p300m.drop_tip()
+
+    # ----------------------------------------------------------------------
+    # Workflow 2: Combinatorial Dose-Response Matrix
+    # ----------------------------------------------------------------------
+    # Real lab practice:
+    #   * Compound A (red) titrated across columns 1->12 in a decreasing
+    #     concentration gradient. All 8 rows get the same volume per column.
+    #   * Compound B (blue) titrated down rows A->H in an increasing
+    #     gradient. Done with the single-channel because per-row volume
+    #     varies.
+    #   * A constant yellow "viability indicator" goes into the central
+    #     wells (the experimental region) - a real lab would add resazurin
+    #     or similar at this step.
+    #   * Result: a 96-well 2D color matrix; each well is a unique
+    #     red x blue combination.
+    def workflow_combinatorial_matrix(plate, plate_idx: int, variant: str):
+        wash_mode  = plate_idx >= WASH_TRIGGER_PLATE
+        base_ul    = 30
+        max_red    = 60   # peak at col 0
+        max_blue   = 50   # peak at row H
+        indicator  = 20   # yellow, single-channel
+        # Max single-well total: 30 + 60 + 50 + 20 = 160 uL (well max 200) ✓
+
+        protocol.comment(
+            f"=== Plate {plate_idx + 1} | DOSE-RESPONSE MATRIX ({variant}) ==="
+        )
+
+        # 1) Multi-channel: assay buffer base in every column.
+        multi_pick_fresh()
+        for col in range(N_COLS):
+            p300m.aspirate(base_ul, reservoir[DILUENT])
+            p300m.dispense(base_ul, plate.columns()[col][0].bottom(2))
+        finish_multi(wash_mode)
+
+        # 2) Multi-channel: red gradient across columns (compound A titration).
+        multi_pick_fresh()
+        for col in range(N_COLS):
+            v = round(max_red * (N_COLS - 1 - col) / (N_COLS - 1))
+            if v < MIN_DISPENSE_UL:
+                continue
+            p300m.aspirate(v, reservoir[RED])
+            p300m.dispense(v, plate.columns()[col][0].bottom(2))
+        finish_multi(wash_mode)
+
+        # 3) Single-channel: blue gradient down rows (compound B titration).
         pick_single_tip("blue")
-        render_line(top_word,    row_offset=2)
-        render_line(bottom_word, row_offset=9)
+        for r_idx, row_letter in enumerate("ABCDEFGH"):
+            v = round(max_blue * r_idx / (N_ROWS - 1))
+            if v < MIN_DISPENSE_UL:
+                continue
+            for col in range(N_COLS):
+                w = plate.wells_by_name()[f"{row_letter}{col + 1}"]
+                p300s.aspirate(v, reservoir[BLUE])
+                p300s.dispense(v, w.bottom(2))
+        p300s.drop_tip()
+
+        # 4) Single-channel: yellow viability indicator into the experimental
+        #    region (everything except outer "border" wells, a common real
+        #    layout to avoid edge-effects).
+        if variant == "centered":
+            target_wells = [
+                f"{r}{c + 1}"
+                for r in "BCDEFG"   # skip A and H
+                for c in range(1, N_COLS - 1)  # skip first and last col
+            ]
+        else:  # "full"
+            target_wells = [f"{r}{c + 1}" for r in "ABCDEFGH" for c in range(N_COLS)]
+
+        pick_single_tip("yellow")
+        for w_name in target_wells:
+            w = plate.wells_by_name()[w_name]
+            p300s.aspirate(indicator, reservoir[YELLOW])
+            p300s.dispense(indicator, w.bottom(2))
         p300s.drop_tip()
 
     # ----------------------------------------------------------------------
-    # Run sequence: dispatch each plate to its kind-specific painter
+    # Workflow 3: Multiplex Plate Map / Reagent Layout
     # ----------------------------------------------------------------------
-    matrix_specs = [
-        # (pattern, reverse_primary) -- cycled across 96-well plates only
-        ("matrix",   False),
-        ("matrix",   True),
-        ("checker",  False),
-        ("stripes",  True),
-        ("diagonal", False),
-        ("matrix",   True),
+    # Real lab practice:
+    #   * Each column block is a different "reagent" or "compound family".
+    #     This is exactly how a multiplex assay plate or a screening plate
+    #     is laid out before adding samples.
+    #   * Multi-channel distributes the four "reagents" (R, Y, B, R+B) into
+    #     three-column blocks at a uniform volume.
+    #   * Single-channel adds defined "positive control" and "negative
+    #     control" spots (a typical assay-QC layout).
+    #   * Multi-channel tops everything up to a uniform working volume
+    #     (volumetric normalization).
+    def workflow_multiplex_layout(plate, plate_idx: int, variant: str):
+        wash_mode  = plate_idx >= WASH_TRIGGER_PLATE
+        reagent_ul = 50    # primary "reagent" volume in each block
+        topup_to   = 100   # final working volume after normalization
+        control_ul = 25
+
+        protocol.comment(
+            f"=== Plate {plate_idx + 1} | MULTIPLEX PLATE MAP ({variant}) ==="
+        )
+
+        if variant == "blocks":
+            blocks = [
+                (RED,    range(0, 3),  False),
+                (YELLOW, range(3, 6),  False),
+                (BLUE,   range(6, 9),  False),
+                (RED,    range(9, 12), True),    # last block = red+blue mix
+            ]
+        else:  # "stripes" - alternating reagents
+            blocks = [
+                (RED,    [0, 4, 8],  False),
+                (YELLOW, [1, 5, 9],  False),
+                (BLUE,   [2, 6, 10], False),
+                (RED,    [3, 7, 11], True),
+            ]
+
+        # 1) Multi-channel: dispense the primary reagent for each block.
+        for lane, cols, needs_overlay in blocks:
+            multi_pick_fresh()
+            for col in cols:
+                p300m.aspirate(reagent_ul, reservoir[lane])
+                p300m.dispense(reagent_ul, plate.columns()[col][0].bottom(2))
+            finish_multi(wash_mode)
+            if needs_overlay:
+                # Add a half-volume of blue to make the "mixed reagent" block.
+                multi_pick_fresh()
+                for col in cols:
+                    p300m.aspirate(reagent_ul // 2, reservoir[BLUE])
+                    p300m.dispense(reagent_ul // 2, plate.columns()[col][0].bottom(2))
+                finish_multi(wash_mode)
+
+        # 2) Single-channel: positive control (high yellow) in row A,
+        #    negative control (no addition) in row H - both standard plate
+        #    QC layouts.
+        pick_single_tip("yellow")
+        for col in range(N_COLS):
+            w = plate.wells_by_name()[f"A{col + 1}"]
+            p300s.aspirate(control_ul, reservoir[YELLOW])
+            p300s.dispense(control_ul, w.bottom(2))
+        p300s.drop_tip()
+
+        # 3) Multi-channel: volumetric normalization - top every well up to
+        #    a uniform working volume with diluent. Real-lab equivalent of
+        #    bringing all samples to the same final volume before reading.
+        multi_pick_fresh()
+        for col in range(N_COLS):
+            # Estimate current volume per well in this column. Wells in
+            # column-blocks got `reagent_ul` (plus maybe overlay). Row A also
+            # got a control_ul addition.
+            col_block = next(
+                (b for b in blocks if col in list(b[1])),
+                None,
+            )
+            current = 0
+            if col_block is not None:
+                current += reagent_ul + (reagent_ul // 2 if col_block[2] else 0)
+            topup_each_row = max(0, topup_to - current)
+            if topup_each_row < MIN_DISPENSE_UL:
+                continue
+            p300m.aspirate(topup_each_row, reservoir[DILUENT])
+            p300m.dispense(topup_each_row, plate.columns()[col][0].bottom(2))
+        finish_multi(wash_mode)
+
+    # ----------------------------------------------------------------------
+    # Run sequence
+    # ----------------------------------------------------------------------
+    #   Plate 1: Serial Dilution  (RYB + purple)
+    #   Plate 2: Dose-Response Matrix  (centered indicator)
+    #   Plate 3: Multiplex Layout  (column blocks)   <- wash mode kicks in
+    #   Plate 4: Serial Dilution  (RYB + orange)
+    #   Plate 5: Dose-Response Matrix  (full indicator)
+    #   Plate 6: Multiplex Layout  (stripes)
+    run_sequence = [
+        ("serial",      "RYB+purple"),
+        ("matrix",      "centered"),
+        ("multiplex",   "blocks"),
+        ("serial",      "RYB+orange"),
+        ("matrix",      "full"),
+        ("multiplex",   "stripes"),
     ]
+
+    workflow_funcs = {
+        "serial":    workflow_serial_dilution,
+        "matrix":    workflow_combinatorial_matrix,
+        "multiplex": workflow_multiplex_layout,
+    }
 
     protocol.home()
 
-    idx_96 = 0
-    idx_384 = 0
-    for i, (plate, cfg, kind_name) in enumerate(plates):
-        if kind_name == "384":
-            top_word, bottom_word = TEXT_LINES_384[idx_384 % len(TEXT_LINES_384)]
-            paint_text_plate(plate, cfg, i, top_word, bottom_word)
-            idx_384 += 1
-        else:
-            pattern, reverse = matrix_specs[idx_96 % len(matrix_specs)]
-            paint_matrix_plate(plate, cfg, kind_name, i, pattern, reverse)
-            idx_96 += 1
+    for i, ((wf_name, variant), plate) in enumerate(zip(run_sequence, plates)):
+        workflow_funcs[wf_name](plate, i, variant)
 
-        protocol.delay(
-            seconds=viewing_delay_s,
-            msg=f"Showing plate {i + 1} ({kind_name}-well)",
-        )
+        if incubation_delay_s > 0:
+            protocol.delay(
+                seconds=incubation_delay_s,
+                msg=f"Plate {i + 1}: simulated assay incubation",
+            )
+        if viewing_delay_s > 0:
+            protocol.delay(
+                seconds=viewing_delay_s,
+                msg=f"Plate {i + 1}: showing finished plate",
+            )
 
     protocol.comment("Demo complete - thanks for visiting the Opentrons booth!")

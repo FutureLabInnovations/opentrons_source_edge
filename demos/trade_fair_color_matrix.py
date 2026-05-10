@@ -23,6 +23,11 @@ Tip strategy (per user spec):
     large water reservoir between colors and returned to their rack so the
     same column can be picked up again.
 
+Runtime parameters (set in the Opentrons app before starting the run):
+  * Plate format -- "96-well only", "384-well only", or "Both (3 of each)"
+  * Per-plate viewing delay (s) -- pause length after each finished plate;
+    bump up to extend total runtime.
+
 Materials needed
 ----------------
 Hardware (already on robot):
@@ -30,8 +35,9 @@ Hardware (already on robot):
   * P300 Multi-Channel GEN2  (right mount)
   * P300 Single-Channel GEN2 (left mount)
 
-Labware:
-  * 6 x corning_96_wellplate_360ul_flat   (clear, flat-bottom, slots 2,5,6,7,8,11)
+Labware (slots 2,5,6,7,8,11 hold plates; mix depends on RTP):
+  * up to 6 x corning_96_wellplate_360ul_flat   (clear, flat-bottom)
+  * up to 6 x corning_384_wellplate_112ul_flat  (clear, flat-bottom)
   * 1 x nest_12_reservoir_15ml            (slot 4: red, yellow, blue, water, ...)
   * 1 x nest_1_reservoir_195ml            (slot 9: bulk water for wash station)
   * 3 x opentrons_96_tiprack_300ul        (slots 1,3,10)
@@ -58,7 +64,8 @@ metadata = {
     "description": "Autonomous 2-hour colorful demo using P300 multi + P300 single",
 }
 
-requirements = {"robotType": "OT-2", "apiLevel": "2.15"}
+# 2.18+ is required for runtime parameters (add_parameters / protocol.params).
+requirements = {"robotType": "OT-2", "apiLevel": "2.18"}
 
 
 # ---------------------------------------------------------------------------
@@ -81,15 +88,113 @@ TIP_SECTIONS = {
 # "fresh tips per color" to "wash-and-reuse" mode.
 WASH_TRIGGER_PLATE = 2
 
-# Per-plate volumes (uL). All wells receive a water base and then varying
-# amounts of red, blue, and yellow to produce the color matrix.
-BASE_WATER_UL    = 60          # constant water base in every well
-MAX_PRIMARY_UL   = 60          # peak red/blue volume at gradient extremes
-MAX_YELLOW_UL    = 50          # peak yellow accent at the bottom row
-MIN_DISPENSE_UL  = 20          # P300 lower limit; volumes below this are skipped
+# P300 lower limit; any computed volume below this is skipped.
+MIN_DISPENSE_UL = 20
 
-# Pause after each plate so visitors can see the finished art.
-PLATE_VIEWING_DELAY_S = 45
+# Per-plate-format configuration. The 384-well plate has half the well volume
+# of the 96-well plate (112 uL vs 360 uL), denser geometry (16 rows / 24 cols),
+# and an 8-channel pipette can only reach every-other row per aim, so it
+# requires two aim rows ("A", "B") to address all 16 rows.
+PLATE_CONFIGS = {
+    "96": {
+        "load_name":      "corning_96_wellplate_360ul_flat",
+        "n_rows":         8,
+        "n_cols":         12,
+        "base_water_ul":  60,
+        "max_primary_ul": 60,
+        "max_yellow_ul":  50,
+        "multi_aim_rows": ["A"],
+    },
+    "384": {
+        "load_name":      "corning_384_wellplate_112ul_flat",
+        "n_rows":         16,
+        "n_cols":         24,
+        # Tighter volumes to fit the 112 uL well: 20 + 45 + 40 = 105 uL max.
+        "base_water_ul":  20,
+        "max_primary_ul": 45,
+        "max_yellow_ul":  40,
+        "multi_aim_rows": ["A", "B"],
+    },
+}
+
+# Six plate slots; this maps the plate_format RTP to a list of plate kinds
+# (one per slot, in the order slots [2, 5, 6, 7, 8, 11] are filled).
+FORMAT_TO_KINDS = {
+    "96":   ["96"]  * 6,
+    "384":  ["384"] * 6,
+    "both": ["96", "96", "96", "384", "384", "384"],
+}
+
+
+# ---------------------------------------------------------------------------
+# 3x5 pixel font for 384-well text rendering ("FUTURE LAB INNOVATIONS")
+# ---------------------------------------------------------------------------
+# Each glyph is 5 rows tall and 3 columns wide. Letters are spaced one column
+# apart, so each character occupies 4 columns total (3 + gap). With 24 plate
+# columns we fit up to six 3-wide glyphs per line; with 16 plate rows we fit
+# two lines stacked vertically.
+FONT_3x5 = {
+    "F": ["###", "#..", "##.", "#..", "#.."],
+    "U": ["#.#", "#.#", "#.#", "#.#", "###"],
+    "T": ["###", ".#.", ".#.", ".#.", ".#."],
+    "R": ["##.", "#.#", "##.", "#.#", "#.#"],
+    "E": ["###", "#..", "##.", "#..", "###"],
+    "L": ["#..", "#..", "#..", "#..", "###"],
+    "A": [".#.", "#.#", "###", "#.#", "#.#"],
+    "B": ["##.", "#.#", "##.", "#.#", "##."],
+    "I": ["###", ".#.", ".#.", ".#.", "###"],
+    "N": ["#.#", "##.", "###", ".##", "#.#"],
+    "O": ["###", "#.#", "#.#", "#.#", "###"],
+    "V": ["#.#", "#.#", "#.#", "#.#", ".#."],
+    "S": ["###", "#..", "###", "..#", "###"],
+    " ": ["...", "...", "...", "...", "..."],
+}
+
+# Two-line layout per 384-well plate. Together these spell
+# "FUTURE LAB INNOVATIONS" across two consecutive 384 plates.
+TEXT_LINES_384 = [
+    ("FUTURE", "LAB"),
+    ("INNOVA", "TIONS"),
+]
+
+# Volume of the dye dispensed into each "lit" pixel on a 384 text plate.
+# 60 uL is well above MIN_DISPENSE_UL and gives a visibly-saturated letter
+# on top of the 20 uL water base (total 80 uL, well below the 112 uL well
+# capacity).
+TEXT_PIXEL_UL = 60
+
+
+# ---------------------------------------------------------------------------
+# Runtime parameters
+# ---------------------------------------------------------------------------
+
+def add_parameters(parameters):
+    parameters.add_str(
+        variable_name="plate_format",
+        display_name="Plate format",
+        description=(
+            "Which plate format to demo. 'Both' loads three of each "
+            "side-by-side on the deck."
+        ),
+        default="96",
+        choices=[
+            {"display_name": "96-well only (6 plates)",  "value": "96"},
+            {"display_name": "384-well only (6 plates)", "value": "384"},
+            {"display_name": "Both (3 x 96 + 3 x 384)",  "value": "both"},
+        ],
+    )
+    parameters.add_int(
+        variable_name="viewing_delay_s",
+        display_name="Per-plate viewing delay (s)",
+        description=(
+            "Pause after each finished plate so visitors can admire the "
+            "result. Increase to extend total runtime."
+        ),
+        default=90,
+        minimum=0,
+        maximum=600,
+        unit="s",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -98,16 +203,23 @@ PLATE_VIEWING_DELAY_S = 45
 
 def run(protocol: protocol_api.ProtocolContext):
 
+    plate_format    = protocol.params.plate_format
+    viewing_delay_s = protocol.params.viewing_delay_s
+    plate_kinds     = FORMAT_TO_KINDS[plate_format]
+
     # Labware ---------------------------------------------------------------
     reservoir    = protocol.load_labware("nest_12_reservoir_15ml",   4)
     wash_station = protocol.load_labware("nest_1_reservoir_195ml",   9)
 
-    plates = [
-        protocol.load_labware(
-            "corning_96_wellplate_360ul_flat", slot, f"plate {i + 1}"
+    # Load each plate slot according to its kind from the RTP.
+    plates = []
+    for i, slot in enumerate([2, 5, 6, 7, 8, 11]):
+        kind_name = plate_kinds[i]
+        cfg = PLATE_CONFIGS[kind_name]
+        plate = protocol.load_labware(
+            cfg["load_name"], slot, f"plate {i + 1} ({kind_name}-well)"
         )
-        for i, slot in enumerate([2, 5, 6, 7, 8, 11])
-    ]
+        plates.append((plate, cfg, kind_name))
 
     rack_single  = protocol.load_labware("opentrons_96_tiprack_300ul", 1, "single tips")
     rack_multi_a = protocol.load_labware("opentrons_96_tiprack_300ul", 3, "multi tips A")
@@ -176,115 +288,201 @@ def run(protocol: protocol_api.ProtocolContext):
         p300m.blow_out(wash_station["A1"].top())
 
     # ----------------------------------------------------------------------
-    # Per-plate painting
+    # Per-plate painting (works for both 96- and 384-well plates)
     # ----------------------------------------------------------------------
-    def red_volume(col: int, reverse: bool) -> int:
-        # Decreasing across columns 0..11 (or reversed). Returns 0 for any
-        # value below the pipette's safe minimum.
-        idx = (11 - col) if not reverse else col
-        v = round(MAX_PRIMARY_UL * idx / 11)
+    def primary_volume(col: int, n_cols: int, max_ul: int, decreasing: bool) -> int:
+        # Linear ramp across the plate's columns. `decreasing=True` peaks at
+        # col 0; otherwise peaks at the last column. Volumes below the
+        # pipette's safe minimum are returned as 0 (skipped).
+        denom = max(1, n_cols - 1)
+        idx = (denom - col) if decreasing else col
+        v = round(max_ul * idx / denom)
         return v if v >= MIN_DISPENSE_UL else 0
 
-    def blue_volume(col: int, reverse: bool) -> int:
-        idx = col if not reverse else (11 - col)
-        v = round(MAX_PRIMARY_UL * idx / 11)
+    def yellow_volume(row_idx: int, n_rows: int, max_ul: int) -> int:
+        denom = max(1, n_rows - 1)
+        v = round(max_ul * row_idx / denom)
         return v if v >= MIN_DISPENSE_UL else 0
 
-    def yellow_volume(row_idx: int) -> int:
-        v = round(MAX_YELLOW_UL * row_idx / 7)
-        return v if v >= MIN_DISPENSE_UL else 0
-
-    def wells_for_pattern(pattern: str, row_idx: int):
-        # Returns the column indices (0..11) that get a yellow accent for a
-        # given row in this pattern.
+    def wells_for_pattern(pattern: str, row_idx: int, n_cols: int):
+        # Returns the column indices (0..n_cols-1) that get a yellow accent
+        # for a given row in this pattern.
         if pattern == "checker":
-            return list(range(row_idx % 2, 12, 2))
+            return list(range(row_idx % 2, n_cols, 2))
         if pattern == "stripes":
-            return list(range(0, 12, 3))
+            return list(range(0, n_cols, 3))
         if pattern == "diagonal":
-            shift = row_idx
-            return [(c + shift) % 12 for c in range(0, 12, 2)]
-        # default: every column
-        return list(range(12))
+            return [(c + row_idx) % n_cols for c in range(0, n_cols, 2)]
+        return list(range(n_cols))  # default: every column
 
-    def paint_plate(plate, plate_idx: int, pattern: str, reverse_primary: bool):
+    def paint_matrix_plate(plate, cfg, kind_name: str, plate_idx: int,
+                           pattern: str, reverse_primary: bool):
         wash_mode = plate_idx >= WASH_TRIGGER_PLATE
+        n_rows = cfg["n_rows"]
+        n_cols = cfg["n_cols"]
+        aim_rows = cfg["multi_aim_rows"]
+        base_ul    = cfg["base_water_ul"]
+        primary_ul = cfg["max_primary_ul"]
+        yellow_ul  = cfg["max_yellow_ul"]
+
         protocol.comment(
-            f"=== Plate {plate_idx + 1} | pattern={pattern} | "
+            f"=== Plate {plate_idx + 1} ({kind_name}-well matrix) | pattern={pattern} | "
             f"reverse={reverse_primary} | wash_mode={wash_mode} ==="
         )
 
+        # Helper: dispense `vol` of `source` into every (aim_row, col) pair.
+        # For 96-well aim_rows=["A"]; for 384-well aim_rows=["A","B"] so each
+        # column gets two passes (covering all 16 rows via 8-channel offsets).
+        def multi_paint(source, vol_for_col):
+            for col in range(n_cols):
+                v = vol_for_col(col)
+                if v == 0:
+                    continue
+                for aim in aim_rows:
+                    target = plate.wells_by_name()[f"{aim}{col + 1}"]
+                    p300m.aspirate(v, source)
+                    p300m.dispense(v, target.top(-3))
+
+        def finish_multi():
+            if wash_mode:
+                multi_wash_in_reservoir()
+                p300m.return_tip()
+            else:
+                p300m.drop_tip()
+
         # 1) Multi-channel: water base in every column ---------------------
         multi_pick_fresh()
-        for col in range(12):
-            p300m.aspirate(BASE_WATER_UL, reservoir[DILUENT])
-            p300m.dispense(BASE_WATER_UL, plate.columns()[col][0].top(-3))
-        if wash_mode:
-            multi_wash_in_reservoir()
-            p300m.return_tip()
-        else:
-            p300m.drop_tip()
+        multi_paint(reservoir[DILUENT], lambda c: base_ul)
+        finish_multi()
 
         # 2) Multi-channel: red gradient across columns --------------------
         multi_pick_fresh()
-        for col in range(12):
-            v = red_volume(col, reverse_primary)
-            if v == 0:
-                continue
-            p300m.aspirate(v, reservoir[RED])
-            p300m.dispense(v, plate.columns()[col][0].top(-3))
-        if wash_mode:
-            multi_wash_in_reservoir()
-            p300m.return_tip()
-        else:
-            p300m.drop_tip()
+        multi_paint(
+            reservoir[RED],
+            lambda c: primary_volume(c, n_cols, primary_ul, decreasing=not reverse_primary),
+        )
+        finish_multi()
 
         # 3) Multi-channel: blue gradient across columns -------------------
         multi_pick_fresh()
-        for col in range(12):
-            v = blue_volume(col, reverse_primary)
-            if v == 0:
-                continue
-            p300m.aspirate(v, reservoir[BLUE])
-            p300m.dispense(v, plate.columns()[col][0].top(-3))
-        if wash_mode:
-            multi_wash_in_reservoir()
-            p300m.return_tip()
-        else:
-            p300m.drop_tip()
+        multi_paint(
+            reservoir[BLUE],
+            lambda c: primary_volume(c, n_cols, primary_ul, decreasing=reverse_primary),
+        )
+        finish_multi()
 
         # 4) Single-channel: yellow row accents ----------------------------
-        # One fresh yellow-section tip per plate (yellow only sees yellow).
+        # One fresh yellow-section tip per plate.
         pick_single_tip("yellow")
-        for row_idx, row_letter in enumerate("ABCDEFGH"):
-            v = yellow_volume(row_idx)
+        rows = "ABCDEFGHIJKLMNOP"[:n_rows]
+        for row_idx, row_letter in enumerate(rows):
+            v = yellow_volume(row_idx, n_rows, yellow_ul)
             if v == 0:
                 continue
-            for col in wells_for_pattern(pattern, row_idx):
+            for col in wells_for_pattern(pattern, row_idx, n_cols):
                 target = plate.wells_by_name()[f"{row_letter}{col + 1}"]
                 p300s.aspirate(v, reservoir[YELLOW])
                 p300s.dispense(v, target.top(-3))
         p300s.drop_tip()
 
-        # Show off the finished plate ------------------------------------
-        protocol.delay(seconds=PLATE_VIEWING_DELAY_S, msg=f"Showing plate {plate_idx + 1}")
+        # (Viewing delay handled by the outer dispatcher.)
 
     # ----------------------------------------------------------------------
-    # Run six plates with varied patterns
+    # Per-plate text rendering for 384-well plates
     # ----------------------------------------------------------------------
-    plate_specs = [
-        # (pattern, reverse_primary)
-        ("matrix",   False),   # plate 1: red->blue across, yellow rows top->bottom
-        ("matrix",   True),    # plate 2: reversed primary direction
-        ("checker",  False),   # plate 3: yellow checkerboard (wash mode kicks in)
-        ("stripes",  True),    # plate 4: vertical yellow stripes, reversed primaries
-        ("diagonal", False),   # plate 5: diagonal yellow march
-        ("matrix",   True),    # plate 6: full-saturation finale
+    def paint_text_plate(plate, cfg, plate_idx: int,
+                         top_word: str, bottom_word: str):
+        wash_mode = plate_idx >= WASH_TRIGGER_PLATE
+        n_rows  = cfg["n_rows"]      # 16
+        n_cols  = cfg["n_cols"]      # 24
+        aim_rows = cfg["multi_aim_rows"]
+        base_ul = cfg["base_water_ul"]
+
+        protocol.comment(
+            f"=== Plate {plate_idx + 1} (384-well text: '{top_word}' / "
+            f"'{bottom_word}') | wash_mode={wash_mode} ==="
+        )
+
+        # 1) Multi-channel: water base across all 24 columns x 2 aim rows.
+        multi_pick_fresh()
+        for col in range(n_cols):
+            for aim in aim_rows:
+                target = plate.wells_by_name()[f"{aim}{col + 1}"]
+                p300m.aspirate(base_ul, reservoir[DILUENT])
+                p300m.dispense(base_ul, target.top(-3))
+        if wash_mode:
+            multi_wash_in_reservoir()
+            p300m.return_tip()
+        else:
+            p300m.drop_tip()
+
+        # 2) Single-channel: paint each text line in BLUE dye.
+        # Top line at rows 2-6, bottom line at rows 9-13. Both vertically
+        # well-centered within the 16-row plate (~2 rows margin top/bottom,
+        # 2 rows gap between lines).
+        rows_alphabet = "ABCDEFGHIJKLMNOP"
+
+        def render_line(text: str, row_offset: int):
+            text = text.upper()
+            glyph_width = 3
+            gap = 1
+            stride = glyph_width + gap
+            text_width = len(text) * stride - gap if text else 0
+            col_offset = max(0, (n_cols - text_width) // 2)
+            for char_idx, ch in enumerate(text):
+                glyph = FONT_3x5.get(ch, FONT_3x5[" "])
+                base_col = col_offset + char_idx * stride
+                for r in range(5):
+                    for c in range(glyph_width):
+                        if glyph[r][c] != "#":
+                            continue
+                        plate_row = row_offset + r
+                        plate_col = base_col + c
+                        if not (0 <= plate_row < n_rows and 0 <= plate_col < n_cols):
+                            continue
+                        target = plate.wells_by_name()[
+                            f"{rows_alphabet[plate_row]}{plate_col + 1}"
+                        ]
+                        p300s.aspirate(TEXT_PIXEL_UL, reservoir[BLUE])
+                        p300s.dispense(TEXT_PIXEL_UL, target.top(-3))
+
+        # Use the BLUE-section single-channel tips (one tip for the full plate;
+        # both lines share it since blue only ever sees blue).
+        pick_single_tip("blue")
+        render_line(top_word,    row_offset=2)
+        render_line(bottom_word, row_offset=9)
+        p300s.drop_tip()
+
+    # ----------------------------------------------------------------------
+    # Run sequence: dispatch each plate to its kind-specific painter
+    # ----------------------------------------------------------------------
+    matrix_specs = [
+        # (pattern, reverse_primary) -- cycled across 96-well plates only
+        ("matrix",   False),
+        ("matrix",   True),
+        ("checker",  False),
+        ("stripes",  True),
+        ("diagonal", False),
+        ("matrix",   True),
     ]
 
     protocol.home()
 
-    for i, (pattern, reverse) in enumerate(plate_specs):
-        paint_plate(plates[i], i, pattern, reverse)
+    idx_96 = 0
+    idx_384 = 0
+    for i, (plate, cfg, kind_name) in enumerate(plates):
+        if kind_name == "384":
+            top_word, bottom_word = TEXT_LINES_384[idx_384 % len(TEXT_LINES_384)]
+            paint_text_plate(plate, cfg, i, top_word, bottom_word)
+            idx_384 += 1
+        else:
+            pattern, reverse = matrix_specs[idx_96 % len(matrix_specs)]
+            paint_matrix_plate(plate, cfg, kind_name, i, pattern, reverse)
+            idx_96 += 1
+
+        protocol.delay(
+            seconds=viewing_delay_s,
+            msg=f"Showing plate {i + 1} ({kind_name}-well)",
+        )
 
     protocol.comment("Demo complete - thanks for visiting the Opentrons booth!")

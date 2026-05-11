@@ -74,12 +74,16 @@ are the food-coloring stocks (poured directly into the 12-channel reservoir
 lanes) and the wash water (poured into the 1-well reservoir).
 
 Reagents (food-grade, non-hazardous):
-  * Red, yellow, and blue food coloring (~25 mL each, diluted 1:5 in water
+  * Red, yellow, and blue food coloring (~10 mL each, diluted 1:5 in water
     in their reservoir lanes for vivid but not over-saturated color)
-  * Distilled water for the diluent lane and wash station (~250 mL total)
+  * Distilled water - ~180 mL in the bulk 195 mL reservoir. This reservoir
+    serves as BOTH the diluent source and the tip-wash station; the wash
+    step mixes in place without consuming water, so a single fill lasts
+    the full 2-hour run.
 
-Reservoir layout (NEST 12-well, slot 4):
-   A1=red  A2=yellow  A3=blue  A4=diluent (water)  A5..A12=spare/waste
+Reservoir layout (NEST 12-channel, slot 4):
+   A1=red  A2=yellow  A3=blue  A4..A12=spare (unused; available for additional
+                                              dyes if you extend the protocol)
 
 Setup tip:
   Place a white sheet or LED light pad under the OT-2 deck. The NEST plate's
@@ -232,12 +236,16 @@ def run(protocol: protocol_api.ProtocolContext):
         p300m.pick_up_tip(target)
 
     def multi_wash_in_reservoir():
-        # 3x rinse cycle in the bulk water reservoir, then a blow-out at the
-        # surface to clear residual dye.
-        for _ in range(3):
-            p300m.aspirate(250, wash_station["A1"].bottom(2))
-            p300m.dispense(250, wash_station["A1"].top(-3))
-        p300m.blow_out(wash_station["A1"].top())
+        # Real-lab tip-wash pattern: 4 mix cycles in the bulk water reservoir,
+        # then a blow-out at the surface to clear residual dye. (Same pattern
+        # the proven internal serial-dilution protocol uses.)
+        p300m.mix(4, 250, wash_station["A1"].bottom(2))
+        p300m.blow_out(wash_station["A1"].top(-3))
+
+    def single_wash_in_reservoir():
+        # Same wash pattern, scaled to a single-channel volume.
+        p300s.mix(4, 200, wash_station["A1"].bottom(2))
+        p300s.blow_out(wash_station["A1"].top(-3))
 
     def finish_multi(wash_mode: bool):
         if wash_mode:
@@ -246,46 +254,90 @@ def run(protocol: protocol_api.ProtocolContext):
         else:
             p300m.drop_tip()
 
+    # Reservoir-source mapping and volume tracking --------------------------
+    # The 3 dyes live in NEST 12-channel troughs (~14 mL usable each). The
+    # diluent comes from the bulk 195 mL reservoir on slot 9, which also
+    # doubles as the tip-wash station - the wash step does mix() with the
+    # same tip in the same trough, so no net water is consumed by washing.
+    # Tracking per source lets us abort cleanly rather than aspirate air
+    # after many transfers, the same idea as the proven protocol's
+    # TubeTracker, minus the cone math (these are flat troughs).
+    sources = {
+        RED:     reservoir[RED],
+        YELLOW:  reservoir[YELLOW],
+        BLUE:    reservoir[BLUE],
+        DILUENT: wash_station["A1"],
+    }
+    caps_ul = {
+        RED:     14_000,
+        YELLOW:  14_000,
+        BLUE:    14_000,
+        DILUENT: 180_000,   # 180 mL of the 195 mL bulk reservoir
+    }
+    lane_used_ul = {RED: 0, YELLOW: 0, BLUE: 0, DILUENT: 0}
+
+    def aspirate_tracked(pipette, vol_ul: int, lane: str, channels: int = 1):
+        # channels=8 for multi-channel (each of 8 channels takes vol_ul, all
+        # from the same trough since a NEST lane and the bulk reservoir are
+        # both wide enough to accept all 8 channels side by side).
+        draw_ul = vol_ul * channels
+        if lane_used_ul[lane] + draw_ul > caps_ul[lane]:
+            raise RuntimeError(
+                f"Reservoir source {lane} would be exhausted "
+                f"(used {lane_used_ul[lane]} uL, attempting {draw_ul} uL more, "
+                f"cap {caps_ul[lane]} uL)."
+            )
+        lane_used_ul[lane] += draw_ul
+        pipette.aspirate(vol_ul, sources[lane])
+
+    def dispense_and_lift(pipette, vol_ul: int, well, lift_z: int = -2):
+        # Proven touch-off-without-touch-tip pattern: dispense above the
+        # liquid line (well.top(z=-5)), then hover at top(z=lift_z) to let
+        # any hanging droplet drop into the well rather than be dragged to
+        # the next location.
+        pipette.dispense(vol_ul, well.top(z=-5))
+        pipette.move_to(well.top(z=lift_z))
+
     # ----------------------------------------------------------------------
     # Workflow 1: Serial Dilution / Standard Curve
     # ----------------------------------------------------------------------
-    # Real lab practice:
-    #   * Load 50 uL of diluent into columns 2-12 (the "dilution wells").
-    #   * Load 100 uL of stock sample into column 1, four samples in pairs of
-    #     rows: red (A,B), yellow (C,D), blue (E,F), and a red+blue purple
-    #     mix (G,H).
-    #   * Multi-channel performs a 1:2 serial dilution across columns 1->11,
-    #     mixing at each step. Column 12 is left as the blank.
-    #   * Result: four horizontal color gradients running across the plate.
+    # Volume math taken from the lab's proven internal protocol:
+    #   * 75 uL diluent pre-loaded into columns 2..12 (the "dilution wells").
+    #   * 150 uL of stock sample loaded into column 1, four samples in row
+    #     pairs: red (A,B), yellow (C,D), blue (E,F), and a R+B / R+Y mix
+    #     (G,H) depending on the variant.
+    #   * Multi-channel performs a 1:2 serial dilution across columns 1->11
+    #     with 75 uL transfers + mix at each step. Column 12 stays as the
+    #     no-sample blank - real labs always leave a blank for QC.
+    #   * Per-well end volume ~75-150 uL, well within the NEST 200 uL plate.
     def workflow_serial_dilution(plate, plate_idx: int, variant: str):
-        wash_mode = plate_idx >= WASH_TRIGGER_PLATE
-        diluent_ul = 50      # pre-loaded diluent in cols 2..12
-        stock_ul   = 100     # initial sample volume in col 1
-        xfer_ul    = 50      # 1:2 transfer volume
-        mix_ul     = 50
-        mix_reps   = 3
+        wash_mode  = plate_idx >= WASH_TRIGGER_PLATE
+        diluent_ul = 75
+        stock_ul   = 150
+        xfer_ul    = 75
+        mix_ul     = 75
+        mix_reps   = 4
 
         protocol.comment(
             f"=== Plate {plate_idx + 1} | SERIAL DILUTION ({variant}) ==="
         )
 
-        # 1) Multi-channel: pre-load diluent into columns 2..12.
+        # 1) Multi-channel: pre-load diluent into columns 2..12, dispensing
+        #    from above and lifting off the surface to break droplets.
         multi_pick_fresh()
         for col in range(1, N_COLS):
-            p300m.aspirate(diluent_ul, reservoir[DILUENT])
-            p300m.dispense(diluent_ul, plate.columns()[col][0].bottom(2))
+            aspirate_tracked(p300m, diluent_ul, DILUENT, channels=8)
+            dispense_and_lift(p300m, diluent_ul, plate.columns()[col][0])
         finish_multi(wash_mode)
 
         # 2) Single-channel: load 4 different stock samples into column 1.
-        #    The pair-of-rows layout means each "sample" produces two
-        #    identical horizontal gradients (real labs run technical
-        #    replicates this way).
+        #    Pair-of-rows layout produces two identical horizontal gradients
+        #    per sample (real labs run technical replicates this way).
         if variant == "RYB+purple":
             sample_layout = [
                 ("red",    ["A1", "B1"], stock_ul,  None),
                 ("yellow", ["C1", "D1"], stock_ul,  None),
                 ("blue",   ["E1", "F1"], stock_ul,  None),
-                # Purple = half-stock red then half-stock blue (mixed below).
                 ("red",    ["G1", "H1"], stock_ul // 2, "blue_addition"),
             ]
         else:  # "RYB+orange": orange = red + yellow
@@ -300,37 +352,33 @@ def run(protocol: protocol_api.ProtocolContext):
         for color, wells, vol, follow_up in sample_layout:
             pick_single_tip(color)
             for w in wells:
-                p300s.aspirate(vol, reservoir[color_to_lane[color]])
-                p300s.dispense(vol, plate.wells_by_name()[w].bottom(2))
+                aspirate_tracked(p300s, vol, color_to_lane[color])
+                dispense_and_lift(p300s, vol, plate.wells_by_name()[w])
             p300s.drop_tip()
-            if follow_up == "blue_addition":
-                pick_single_tip("blue")
+            if follow_up in ("blue_addition", "yellow_addition"):
+                mix_color = "blue" if follow_up == "blue_addition" else "yellow"
+                mix_lane  = BLUE   if mix_color == "blue"           else YELLOW
+                pick_single_tip(mix_color)
                 for w in wells:
-                    p300s.aspirate(stock_ul // 2, reservoir[BLUE])
-                    p300s.dispense(stock_ul // 2, plate.wells_by_name()[w].bottom(2))
-                    p300s.mix(2, mix_ul, plate.wells_by_name()[w].bottom(2))
-                p300s.drop_tip()
-            elif follow_up == "yellow_addition":
-                pick_single_tip("yellow")
-                for w in wells:
-                    p300s.aspirate(stock_ul // 2, reservoir[YELLOW])
-                    p300s.dispense(stock_ul // 2, plate.wells_by_name()[w].bottom(2))
-                    p300s.mix(2, mix_ul, plate.wells_by_name()[w].bottom(2))
+                    target = plate.wells_by_name()[w]
+                    aspirate_tracked(p300s, stock_ul // 2, mix_lane)
+                    p300s.dispense(stock_ul // 2, target.bottom(2))
+                    p300s.mix(2, mix_ul, target.bottom(2))
+                    p300s.move_to(target.top(z=-2))
                 p300s.drop_tip()
 
         # 3) Multi-channel: 1:2 serial dilution across columns 1 -> 11.
-        #    A new pair of tips for the dilution (these will see all four
-        #    sample colors, so cannot be re-used for any other color step).
+        #    Same column-by-column transfer + mix pattern as the lab's
+        #    proven protocol. Dilution tips see every color in succession
+        #    so they cannot be re-used - drop them at the end.
         multi_pick_fresh()
-        for col in range(N_COLS - 2):  # transfers from col 0..10 into col 1..11
+        for col in range(N_COLS - 2):  # transfers col 0..10 -> col 1..11
             src = plate.columns()[col][0].bottom(2)
             dst = plate.columns()[col + 1][0].bottom(2)
             p300m.aspirate(xfer_ul, src)
             p300m.dispense(xfer_ul, dst)
             p300m.mix(mix_reps, mix_ul, dst)
-            p300m.blow_out(dst.top(-2))
-        # Final tip-off: dilution tips are saturated with mixed dye, so
-        # don't return to rack even in wash mode.
+            p300m.blow_out(plate.columns()[col + 1][0].top(z=-2))
         p300m.drop_tip()
 
     # ----------------------------------------------------------------------
@@ -362,8 +410,8 @@ def run(protocol: protocol_api.ProtocolContext):
         # 1) Multi-channel: assay buffer base in every column.
         multi_pick_fresh()
         for col in range(N_COLS):
-            p300m.aspirate(base_ul, reservoir[DILUENT])
-            p300m.dispense(base_ul, plate.columns()[col][0].bottom(2))
+            aspirate_tracked(p300m, base_ul, DILUENT, channels=8)
+            dispense_and_lift(p300m, base_ul, plate.columns()[col][0])
         finish_multi(wash_mode)
 
         # 2) Multi-channel: red gradient across columns (compound A titration).
@@ -372,8 +420,8 @@ def run(protocol: protocol_api.ProtocolContext):
             v = round(max_red * (N_COLS - 1 - col) / (N_COLS - 1))
             if v < MIN_DISPENSE_UL:
                 continue
-            p300m.aspirate(v, reservoir[RED])
-            p300m.dispense(v, plate.columns()[col][0].bottom(2))
+            aspirate_tracked(p300m, v, RED, channels=8)
+            dispense_and_lift(p300m, v, plate.columns()[col][0])
         finish_multi(wash_mode)
 
         # 3) Single-channel: blue gradient down rows (compound B titration).
@@ -384,8 +432,8 @@ def run(protocol: protocol_api.ProtocolContext):
                 continue
             for col in range(N_COLS):
                 w = plate.wells_by_name()[f"{row_letter}{col + 1}"]
-                p300s.aspirate(v, reservoir[BLUE])
-                p300s.dispense(v, w.bottom(2))
+                aspirate_tracked(p300s, v, BLUE)
+                dispense_and_lift(p300s, v, w)
         p300s.drop_tip()
 
         # 4) Single-channel: yellow viability indicator into the experimental
@@ -403,8 +451,8 @@ def run(protocol: protocol_api.ProtocolContext):
         pick_single_tip("yellow")
         for w_name in target_wells:
             w = plate.wells_by_name()[w_name]
-            p300s.aspirate(indicator, reservoir[YELLOW])
-            p300s.dispense(indicator, w.bottom(2))
+            aspirate_tracked(p300s, indicator, YELLOW)
+            dispense_and_lift(p300s, indicator, w)
         p300s.drop_tip()
 
     # ----------------------------------------------------------------------
@@ -449,15 +497,15 @@ def run(protocol: protocol_api.ProtocolContext):
         for lane, cols, needs_overlay in blocks:
             multi_pick_fresh()
             for col in cols:
-                p300m.aspirate(reagent_ul, reservoir[lane])
-                p300m.dispense(reagent_ul, plate.columns()[col][0].bottom(2))
+                aspirate_tracked(p300m, reagent_ul, lane, channels=8)
+                dispense_and_lift(p300m, reagent_ul, plate.columns()[col][0])
             finish_multi(wash_mode)
             if needs_overlay:
                 # Add a half-volume of blue to make the "mixed reagent" block.
                 multi_pick_fresh()
                 for col in cols:
-                    p300m.aspirate(reagent_ul // 2, reservoir[BLUE])
-                    p300m.dispense(reagent_ul // 2, plate.columns()[col][0].bottom(2))
+                    aspirate_tracked(p300m, reagent_ul // 2, BLUE, channels=8)
+                    dispense_and_lift(p300m, reagent_ul // 2, plate.columns()[col][0])
                 finish_multi(wash_mode)
 
         # 2) Single-channel: positive control (high yellow) in row A,
@@ -466,8 +514,8 @@ def run(protocol: protocol_api.ProtocolContext):
         pick_single_tip("yellow")
         for col in range(N_COLS):
             w = plate.wells_by_name()[f"A{col + 1}"]
-            p300s.aspirate(control_ul, reservoir[YELLOW])
-            p300s.dispense(control_ul, w.bottom(2))
+            aspirate_tracked(p300s, control_ul, YELLOW)
+            dispense_and_lift(p300s, control_ul, w)
         p300s.drop_tip()
 
         # 3) Multi-channel: volumetric normalization - top every well up to
@@ -475,9 +523,6 @@ def run(protocol: protocol_api.ProtocolContext):
         #    bringing all samples to the same final volume before reading.
         multi_pick_fresh()
         for col in range(N_COLS):
-            # Estimate current volume per well in this column. Wells in
-            # column-blocks got `reagent_ul` (plus maybe overlay). Row A also
-            # got a control_ul addition.
             col_block = next(
                 (b for b in blocks if col in list(b[1])),
                 None,
@@ -488,8 +533,8 @@ def run(protocol: protocol_api.ProtocolContext):
             topup_each_row = max(0, topup_to - current)
             if topup_each_row < MIN_DISPENSE_UL:
                 continue
-            p300m.aspirate(topup_each_row, reservoir[DILUENT])
-            p300m.dispense(topup_each_row, plate.columns()[col][0].bottom(2))
+            aspirate_tracked(p300m, topup_each_row, DILUENT, channels=8)
+            dispense_and_lift(p300m, topup_each_row, plate.columns()[col][0])
         finish_multi(wash_mode)
 
     # ----------------------------------------------------------------------
@@ -517,6 +562,7 @@ def run(protocol: protocol_api.ProtocolContext):
     }
 
     protocol.home()
+    protocol.set_rail_lights(True)   # OT-2 deck lights on for booth visibility
 
     for i, ((wf_name, variant), plate) in enumerate(zip(run_sequence, plates)):
         workflow_funcs[wf_name](plate, i, variant)
@@ -532,4 +578,9 @@ def run(protocol: protocol_api.ProtocolContext):
                 msg=f"Plate {i + 1}: showing finished plate",
             )
 
+    protocol.comment(
+        f"Reservoir usage (uL drawn per lane): "
+        f"RED={lane_used_ul[RED]}, YELLOW={lane_used_ul[YELLOW]}, "
+        f"BLUE={lane_used_ul[BLUE]}, DILUENT={lane_used_ul[DILUENT]}"
+    )
     protocol.comment("Demo complete - thanks for visiting the Opentrons booth!")

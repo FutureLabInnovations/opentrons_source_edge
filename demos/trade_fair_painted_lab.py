@@ -1,6 +1,6 @@
 """
-OT-2 Trade Fair Demo  -  "Painted Lab" (NEST flat-bottom)
-=========================================================
+OT-2 Trade Fair Demo  -  "Painted Lab"
+======================================
 
 Autonomous ~2-hour OT-2 demo that turns six 96-well plates into six
 visually distinct mini-experiments. Built around the same proven
@@ -68,24 +68,27 @@ Hardware (already on the robot):
   * P300 Single-Channel GEN2 (left mount)
 
 Labware (load names are the exact strings the OT-2 will look up):
-  * 6 x nest_96_wellplate_200ul_flat      (slots 2, 5, 6, 7, 8, 11)
-  * 1 x nest_12_reservoir_15ml            (slot 4: dye stocks)
-  * 1 x nest_1_reservoir_195ml            (slot 9: diluent + wash water)
+  * 6 x thermofisher_96_wellplate_250ul   (custom labware - the 250 uL
+        ThermoFisher 96-well plate your robot already has uploaded; same
+        load name the internal RGYB serial-dilution protocol uses.
+        Slots 2, 5, 6, 7, 8, 11.)
+  * 1 x nest_12_reservoir_15ml            (slot 4: dyes + diluent + wash)
   * 3 x opentrons_96_tiprack_300ul        (slots 1, 3, 10)
+  * slot 9 is left empty
 
 Consumables to prepare before starting:
-  * Red food colouring   - dilute 1:5 in water -> pour ~12 mL into res A1
-  * Yellow food colouring- dilute 1:5 in water -> pour ~12 mL into res A2
-  * Blue food colouring  - dilute 1:5 in water -> pour ~12 mL into res A3
-  * Distilled water      - pour ~180 mL into the 195 mL bulk reservoir
-                           (slot 9). This single fill covers BOTH the
-                           serial-dilution diluent AND every tip-wash
-                           cycle for the full 2-hour run.
+  * Red food colouring   - dilute 1:5 in water -> pour ~10 mL into res A1
+  * Yellow food colouring- dilute 1:5 in water -> pour ~10 mL into res A2
+  * Blue food colouring  - dilute 1:5 in water -> pour ~10 mL into res A3
+  * Distilled water - pour ~12 mL each into lanes A4, A5, A6 (3 diluent
+                     lanes; the protocol auto-rotates as each fills up).
+  * Distilled water - pour ~12 mL into lane A12 (multi-channel tip wash).
+  * Total water needed: ~48 mL. No 50 mL Falcon tubes or bulk reservoirs
+    needed - everything lives in the single 12-channel reservoir.
 
 Optional but recommended for booth impact:
-  * A white sheet or LED light pad under the OT-2 deck. The NEST flat-
-    bottom wells light up beautifully and gradients read from across
-    the room.
+  * A white sheet or LED light pad under the OT-2 deck. The plates light
+    up beautifully and gradients read from across the room.
   * A printed placard explaining what visitors are seeing.
 
 No 15 mL or 50 mL Falcon tube adapter is required - the protocol does
@@ -104,16 +107,18 @@ SETUP INSTRUCTIONS  (in the order the Opentrons app will walk you through)
                  it picks for which dye)
        slots 3 & 10 = multi-channel tip reservoirs (full racks)
   4. Load the NEST 12-channel reservoir (nest_12_reservoir_15ml) into
-     slot 4 and the bulk 195 mL reservoir into slot 9.
+     slot 4. Slot 9 stays empty.
   5. **In the Liquid Setup screen of the Opentrons app**, confirm:
-       slot 4 well A1 -> Red Dye      (~12 mL)
-       slot 4 well A2 -> Yellow Dye   (~12 mL)
-       slot 4 well A3 -> Blue Dye     (~12 mL)
-       slot 9 well A1 -> Diluent/Wash (~180 mL)
-     Each is registered by the protocol with a display colour so the
-     app shows you a coloured swatch for each lane.
-  6. Load 6 empty nest_96_wellplate_200ul_flat plates into slots
-     2, 5, 6, 7, 8 and 11.
+       slot 4 well A1   -> Red Dye      (~10 mL)
+       slot 4 well A2   -> Yellow Dye   (~10 mL)
+       slot 4 well A3   -> Blue Dye     (~10 mL)
+       slot 4 wells A4-A6 -> Diluent Water (~12 mL each, 3 lanes)
+       slot 4 well A12  -> Wash Water   (~12 mL)
+     Each liquid is registered by the protocol with a display colour so
+     the app shows a coloured swatch for each lane.
+  6. Load 6 empty thermofisher_96_wellplate_250ul plates into slots
+     2, 5, 6, 7, 8 and 11. (This is the custom labware definition you
+     have uploaded to the OT-2; the app will recognise the load name.)
   7. (Optional) Tune the two runtime parameters in the app:
        * Per-plate viewing delay   - default 60 s
        * Per-plate incubation delay- default 180 s
@@ -124,7 +129,7 @@ SETUP INSTRUCTIONS  (in the order the Opentrons app will walk you through)
 from opentrons import protocol_api
 
 metadata = {
-    "protocolName": "Trade Fair - Painted Lab (NEST flat-bottom)",
+    "protocolName": "Trade Fair - Painted Lab",
     "author": "Opentrons Demo",
     "description": (
         "Six 96-well plates, six lab-style colour workflows. Built on the "
@@ -142,8 +147,18 @@ requirements = {"robotType": "OT-2", "apiLevel": "2.18"}
 # Tunables
 # ---------------------------------------------------------------------------
 
-# NEST 12-channel reservoir lane assignments for the three dyes.
+# NEST 12-channel reservoir lane assignments.
+# Dyes live in A1-A3. Diluent water is split across THREE lanes (A4-A6) so
+# the protocol can rotate to the next lane as each ~12 mL fill runs out;
+# A12 is the dedicated wash lane (gradually picks up trace dye over the
+# course of the run, which is fine because nothing is ever drawn from it).
 RED_LANE, YELLOW_LANE, BLUE_LANE = "A1", "A2", "A3"
+DILUENT_LANES = ["A4", "A5", "A6"]
+WASH_LANE     = "A12"
+
+# Safe usable volume per 12-channel reservoir lane (mL spec is 15 mL, we
+# leave a small headroom so the multi-channel never pulls air).
+LANE_USABLE_UL = 12_000
 
 # Single-channel tip-rack sections (1-indexed column ranges, inclusive).
 TIP_SECTIONS = {
@@ -159,8 +174,10 @@ WASH_TRIGGER_PLATE = 2
 # P300 lower limit; any computed volume below this is skipped.
 MIN_DISPENSE_UL = 20
 
-# Plate geometry (NEST 96 Well Plate, 200 uL Flat-bottom).
-PLATE_LOAD_NAME = "nest_96_wellplate_200ul_flat"
+# Plate geometry. thermofisher_96_wellplate_250ul is the custom 250 uL
+# 96-well labware definition uploaded to the OT-2 (same load name the
+# lab's internal RGYB serial-dilution protocol uses).
+PLATE_LOAD_NAME = "thermofisher_96_wellplate_250ul"
 N_ROWS, N_COLS  = 8, 12
 
 # Proven serial-dilution volume math (from the lab's internal protocol).
@@ -184,10 +201,7 @@ def add_parameters(parameters):
     parameters.add_int(
         variable_name="viewing_delay_s",
         display_name="Per-plate viewing delay",
-        description=(
-            "Pause after each finished plate so visitors can admire the "
-            "result. Increase to extend total runtime."
-        ),
+        description="Pause after each finished plate. Increase to extend the demo runtime.",
         default=60,
         minimum=0,
         maximum=600,
@@ -196,11 +210,7 @@ def add_parameters(parameters):
     parameters.add_int(
         variable_name="incubation_delay_s",
         display_name="Per-plate incubation delay",
-        description=(
-            "Mimics a real assay incubation between plates (e.g. letting a "
-            "standard curve settle or a colorimetric reaction develop). "
-            "Set to 0 to skip."
-        ),
+        description="Per-plate pause that mimics an assay incubation (e.g. standard-curve settling).",
         default=180,
         minimum=0,
         maximum=900,
@@ -245,20 +255,28 @@ def run(protocol: protocol_api.ProtocolContext):
         display_color="#0066cc",
     )
     diluent_water = protocol.define_liquid(
-        name="Diluent + Wash Water",
+        name="Diluent Water",
         description=(
-            "Distilled water. Serves BOTH as the serial-dilution buffer "
-            "and as the multi-channel tip-wash bath. Pour ~180 mL into "
-            "the bulk reservoir on slot 9."
+            "Distilled water. Serial-dilution buffer. Pour ~12 mL into "
+            "EACH of lanes A4, A5, A6 (the protocol auto-rotates lanes "
+            "as they empty)."
         ),
         display_color="#bfe6ff",
+    )
+    wash_water = protocol.define_liquid(
+        name="Wash Water",
+        description=(
+            "Distilled water for multi-channel tip rinsing between "
+            "colours. Pour ~12 mL into lane A12. Stays in place for the "
+            "whole run."
+        ),
+        display_color="#cccccc",
     )
 
     # =====================================================================
     # Labware
     # =====================================================================
-    reservoir    = protocol.load_labware("nest_12_reservoir_15ml", 4)
-    wash_station = protocol.load_labware("nest_1_reservoir_195ml", 9)
+    reservoir = protocol.load_labware("nest_12_reservoir_15ml", 4)
 
     plates = [
         protocol.load_labware(PLATE_LOAD_NAME, slot, f"plate {i + 1}")
@@ -270,10 +288,12 @@ def run(protocol: protocol_api.ProtocolContext):
     rack_multi_b = protocol.load_labware("opentrons_96_tiprack_300ul", 10, "multi tips B")
 
     # Tell the app where each liquid starts; the app draws a coloured swatch.
-    reservoir[RED_LANE].load_liquid(red_dye, 12_000)
-    reservoir[YELLOW_LANE].load_liquid(yellow_dye, 12_000)
-    reservoir[BLUE_LANE].load_liquid(blue_dye, 12_000)
-    wash_station["A1"].load_liquid(diluent_water, 180_000)
+    reservoir[RED_LANE].load_liquid(red_dye, 10_000)
+    reservoir[YELLOW_LANE].load_liquid(yellow_dye, 10_000)
+    reservoir[BLUE_LANE].load_liquid(blue_dye, 10_000)
+    for lane in DILUENT_LANES:
+        reservoir[lane].load_liquid(diluent_water, LANE_USABLE_UL)
+    reservoir[WASH_LANE].load_liquid(wash_water, LANE_USABLE_UL)
 
     # =====================================================================
     # Pipettes
@@ -298,17 +318,12 @@ def run(protocol: protocol_api.ProtocolContext):
         "red":    reservoir[RED_LANE],
         "yellow": reservoir[YELLOW_LANE],
         "blue":   reservoir[BLUE_LANE],
-        "water":  wash_station["A1"],
     }
-    caps_ul = {
-        "red":    12_000,
-        "yellow": 12_000,
-        "blue":   12_000,
-        "water":  180_000,
-    }
+    caps_ul = {"red": 10_000, "yellow": 10_000, "blue": 10_000}
     used_ul = {k: 0 for k in caps_ul}
 
     def aspirate_tracked(pipette, vol_ul: int, lane: str, channels: int = 1):
+        # For dye lanes (red / yellow / blue) - single lane each, hard cap.
         draw_ul = vol_ul * channels
         if used_ul[lane] + draw_ul > caps_ul[lane]:
             raise RuntimeError(
@@ -318,6 +333,29 @@ def run(protocol: protocol_api.ProtocolContext):
             )
         used_ul[lane] += draw_ul
         pipette.aspirate(vol_ul, sources[lane])
+
+    # Diluent water lives in *multiple* lanes (A4-A6). The protocol
+    # auto-rotates as each lane fills up - same idea as the proven
+    # protocol's TubeTracker stop-before-air check, but applied across a
+    # bank of lanes so we have ~36 mL of water without needing a bulk
+    # reservoir on slot 9.
+    diluent_used = {lane: 0 for lane in DILUENT_LANES}
+    diluent_idx  = [0]   # mutable, index into DILUENT_LANES
+
+    def aspirate_diluent(pipette, vol_ul: int, channels: int = 1):
+        draw_ul = vol_ul * channels
+        while diluent_idx[0] < len(DILUENT_LANES):
+            lane = DILUENT_LANES[diluent_idx[0]]
+            if diluent_used[lane] + draw_ul <= LANE_USABLE_UL:
+                diluent_used[lane] += draw_ul
+                pipette.aspirate(vol_ul, reservoir[lane])
+                return
+            # current diluent lane full; advance to the next
+            diluent_idx[0] += 1
+        raise RuntimeError(
+            "Diluent exhausted across all "
+            f"{len(DILUENT_LANES)} lanes; refill A4-A6 with more water."
+        )
 
     def dispense_and_lift(pipette, vol_ul: int, well, lift_z: int = -2):
         # Proven touch-off-without-touch-tip: dispense above the surface
@@ -361,9 +399,13 @@ def run(protocol: protocol_api.ProtocolContext):
         p300m.pick_up_tip(target)
 
     def multi_wash():
-        # mix(4, 250) is the proven internal-protocol wash pattern.
-        p300m.mix(4, 250, wash_station["A1"].bottom(2))
-        p300m.blow_out(wash_station["A1"].top(-3))
+        # mix(4, 250) is the proven internal-protocol wash pattern. Wash
+        # water lives in the dedicated A12 lane - it slowly picks up
+        # trace dye over the run, but nothing is ever drawn from it, so
+        # contamination stays inside that one lane.
+        wash_well = reservoir[WASH_LANE]
+        p300m.mix(4, 250, wash_well.bottom(2))
+        p300m.blow_out(wash_well.top(-3))
 
     def finish_multi(wash_mode: bool):
         if wash_mode:
@@ -382,7 +424,7 @@ def run(protocol: protocol_api.ProtocolContext):
         column fill in one shot."""
         multi_pick_fresh()
         for col in range(first_col, last_col_exclusive):
-            aspirate_tracked(p300m, vol_per_col, "water", channels=8)
+            aspirate_diluent(p300m, vol_per_col, channels=8)
             dispense_and_lift(p300m, vol_per_col, plate.columns()[col][0])
         finish_multi(wash_mode)
 
@@ -489,7 +531,7 @@ def run(protocol: protocol_api.ProtocolContext):
         # 1) Multi-channel: assay-buffer base in every column.
         multi_pick_fresh()
         for col in range(N_COLS):
-            aspirate_tracked(p300m, base_ul, "water", channels=8)
+            aspirate_diluent(p300m, base_ul, channels=8)
             dispense_and_lift(p300m, base_ul, plate.columns()[col][0])
         finish_multi(wash_mode)
 
@@ -589,7 +631,7 @@ def run(protocol: protocol_api.ProtocolContext):
         for col_letter in ("1", "2"):
             for row in "BCDEFGH":
                 w = plate.wells_by_name()[f"{row}{col_letter}"]
-                aspirate_tracked(p300s, std_dil_ul, "water")
+                aspirate_diluent(p300s, std_dil_ul)
                 dispense_and_lift(p300s, std_dil_ul, w)
         p300s.drop_tip()
 
@@ -612,7 +654,7 @@ def run(protocol: protocol_api.ProtocolContext):
         # 2) Multi-channel diluent base in cols 3-10 (the sample region).
         multi_pick_fresh()
         for col in range(2, 10):
-            aspirate_tracked(p300m, sample_base_ul, "water", channels=8)
+            aspirate_diluent(p300m, sample_base_ul, channels=8)
             dispense_and_lift(p300m, sample_base_ul, plate.columns()[col][0])
         finish_multi(wash_mode)
 
@@ -646,7 +688,7 @@ def run(protocol: protocol_api.ProtocolContext):
 
         # 5) Multi-channel: NTC blank (water) in col 12.
         multi_pick_fresh()
-        aspirate_tracked(p300m, blank_ul, "water", channels=8)
+        aspirate_diluent(p300m, blank_ul, channels=8)
         dispense_and_lift(p300m, blank_ul, plate.columns()[11][0])
         finish_multi(wash_mode)
 
@@ -826,10 +868,13 @@ def run(protocol: protocol_api.ProtocolContext):
                 msg=f"Plate {i + 1}: showing finished plate",
             )
 
+    diluent_breakdown = ", ".join(
+        f"{lane}={diluent_used[lane]}" for lane in DILUENT_LANES
+    )
     protocol.comment(
         "Reservoir usage (uL drawn): "
         f"red={used_ul['red']}, yellow={used_ul['yellow']}, "
-        f"blue={used_ul['blue']}, water={used_ul['water']}"
+        f"blue={used_ul['blue']} | diluent {diluent_breakdown}"
     )
     protocol.comment(
         "Demo complete - thanks for visiting the Future Lab Innovations booth!"

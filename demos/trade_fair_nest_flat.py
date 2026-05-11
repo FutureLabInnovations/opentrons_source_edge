@@ -145,10 +145,7 @@ def add_parameters(parameters):
     parameters.add_int(
         variable_name="viewing_delay_s",
         display_name="Per-plate viewing delay",
-        description=(
-            "Pause after each finished plate so visitors can admire the "
-            "result. Increase to extend total runtime."
-        ),
+        description="Pause after each finished plate. Increase to extend the demo runtime.",
         default=60,
         minimum=0,
         maximum=600,
@@ -157,11 +154,7 @@ def add_parameters(parameters):
     parameters.add_int(
         variable_name="incubation_delay_s",
         display_name="Per-plate incubation delay",
-        description=(
-            "Mimics a real assay incubation between plates (e.g. letting a "
-            "standard curve settle, or a colorimetric reaction develop). "
-            "Set to 0 to skip."
-        ),
+        description="Per-plate pause that mimics an assay incubation (e.g. standard-curve settling).",
         default=120,
         minimum=0,
         maximum=900,

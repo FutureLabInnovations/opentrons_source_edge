@@ -77,12 +77,11 @@ Labware (load names are the exact strings the OT-2 will look up):
   * slot 9 is left empty
 
 Consumables to prepare before starting:
-  At run start the protocol calls build_sourcing_plan() and prints a
-  pre-flight comment block in the app's run log telling the booth crew
-  EXACTLY how much to pour into which lane. The plan is computed from
-  ESTIMATED_DRAW_UL + light planning buffers (3% overhead + 0.5 mL dead
-  volume) and auto-spreads each reagent across as many 12-mL lanes as
-  needed.
+  At run start the protocol prints a pre-flight comment block in the
+  app's run log telling the booth crew EXACTLY how much to pour into
+  which lane. The plan is computed inline from ESTIMATED_DRAW_UL plus
+  light planning buffers (3% overhead + 0.5 mL dead volume) and auto-
+  spreads each reagent across as many 12-mL lanes as needed.
 
   The default worst-case layout (with current ESTIMATED_DRAW_UL values)
   is approximately:
@@ -161,9 +160,9 @@ requirements = {"robotType": "OT-2", "apiLevel": "2.18"}
 # ---------------------------------------------------------------------------
 
 # NEST 12-channel reservoir layout.
-# Reagent lanes are *assigned at run time* by build_sourcing_plan() based on
-# each reagent's estimated total draw across the demo. A12 stays reserved for
-# the multi-channel tip-wash bath (no draws, nothing read out of it).
+# Reagent lanes are assigned at run time, based on each reagent's estimated
+# total draw across the demo. A12 stays reserved for the multi-channel
+# tip-wash bath (no draws, nothing read out of it).
 ASSIGNABLE_LANES = [f"A{i}" for i in range(1, 12)]   # A1..A11
 WASH_LANE        = "A12"
 
@@ -171,9 +170,8 @@ WASH_LANE        = "A12"
 # 12 mL leaves a small headroom so the multi-channel never pulls air.
 WORKING_LANE_CAPACITY_UL = 12_000
 
-# Planning buffers for build_sourcing_plan() - applied on top of the per-
-# reagent worst-case draw estimate so we always pour slightly more than the
-# protocol expects to use.
+# Planning buffers applied on top of each reagent's worst-case draw, so we
+# always pour slightly more than the protocol expects to use.
 OVERHEAD_FRACTION          = 0.03    # 3% overhead on the estimated draw
 DEAD_VOLUME_PER_REAGENT_UL = 500     # 0.5 mL dead volume per reagent
 
@@ -219,77 +217,6 @@ MIX_REPS    = 4
 # ends up at 150 uL total, matching the proven dilution math).
 HALF_STOCK_UL  = STOCK_UL // 2   # 75 uL for two-colour mixes (75 + 75 = 150)
 THIRD_STOCK_UL = STOCK_UL // 3   # 50 uL for three-colour mixes (50*3 = 150)
-
-
-# ---------------------------------------------------------------------------
-# Sourcing planner (lane assignment + planned start volumes)
-# ---------------------------------------------------------------------------
-
-def build_sourcing_plan(estimates_ul=None,
-                        assignable_lanes=None,
-                        wash_lane=WASH_LANE,
-                        lane_capacity_ul=WORKING_LANE_CAPACITY_UL,
-                        overhead_fraction=OVERHEAD_FRACTION,
-                        dead_volume_ul=DEAD_VOLUME_PER_REAGENT_UL):
-    """Assign 12-channel reservoir lanes to each reagent based on the
-    estimated worst-case draw, applying a light overhead + dead-volume
-    buffer.
-
-    Mirrors the structure of the lab's NCBL v13 aliquoting protocol's
-    pre-flight sourcing loop (reagent_source_wells / planned_start_ul_by_well)
-    but adapted to fixed-order reagent assignment for the demo. Lanes are
-    assigned in order [red, yellow, blue, water], A12 stays reserved for the
-    wash bath.
-
-    Returns a dict::
-
-        {
-          "red":   {"lanes": ["A1"], "planned_start_per_lane": [11_830.0],
-                     "estimated_draw_ul": 11_000, "with_buffer_ul": 11_830.0},
-          ...
-          "_wash": {"lane": "A12"},
-        }
-    """
-    if estimates_ul is None:
-        estimates_ul = ESTIMATED_DRAW_UL
-    if assignable_lanes is None:
-        assignable_lanes = list(ASSIGNABLE_LANES)
-
-    plan = {}
-    cursor = 0
-    for reagent in ("red", "yellow", "blue", "water"):
-        estimated = float(estimates_ul[reagent])
-        with_buffer = estimated * (1.0 + overhead_fraction) + dead_volume_ul
-        n_lanes = max(1, math.ceil(with_buffer / lane_capacity_ul))
-
-        if cursor + n_lanes > len(assignable_lanes):
-            raise RuntimeError(
-                f"Sourcing plan: not enough free lanes for '{reagent}'. "
-                f"Needs {n_lanes} lane(s) at {lane_capacity_ul / 1000:.0f} mL each; "
-                f"only {len(assignable_lanes) - cursor} lane(s) remain in {assignable_lanes}."
-            )
-
-        lanes = assignable_lanes[cursor:cursor + n_lanes]
-        cursor += n_lanes
-
-        # Distribute the buffered volume across the assigned lanes, filling
-        # each up to working capacity and parking the remainder in the last.
-        remaining = with_buffer
-        starts = []
-        for _ in lanes:
-            fill = min(remaining, float(lane_capacity_ul))
-            starts.append(fill)
-            remaining -= fill
-
-        plan[reagent] = {
-            "lanes": lanes,
-            "planned_start_per_lane": starts,
-            "estimated_draw_ul": estimated,
-            "with_buffer_ul": with_buffer,
-        }
-
-    plan["_wash"] = {"lane": wash_lane}
-    return plan
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +316,39 @@ def run(protocol: protocol_api.ProtocolContext):
     # =====================================================================
     # Sourcing plan + Liquid Setup annotations
     # =====================================================================
-    plan = build_sourcing_plan()
+    # Same idea as the NCBL v13 pre-flight loop: assign reservoir lanes to
+    # each reagent based on its estimated worst-case draw plus a light
+    # overhead + dead-volume buffer, fill each lane up to working capacity,
+    # park any remainder in the next lane.
+    plan = {}
+    cursor = 0
+    for reagent in ("red", "yellow", "blue", "water"):
+        estimated   = float(ESTIMATED_DRAW_UL[reagent])
+        with_buffer = estimated * (1.0 + OVERHEAD_FRACTION) + DEAD_VOLUME_PER_REAGENT_UL
+        n_lanes     = max(1, math.ceil(with_buffer / WORKING_LANE_CAPACITY_UL))
+
+        if cursor + n_lanes > len(ASSIGNABLE_LANES):
+            raise RuntimeError(
+                f"Sourcing plan: not enough free lanes for '{reagent}'. "
+                f"Needs {n_lanes} lane(s); only "
+                f"{len(ASSIGNABLE_LANES) - cursor} remain in {ASSIGNABLE_LANES}."
+            )
+        lanes = ASSIGNABLE_LANES[cursor:cursor + n_lanes]
+        cursor += n_lanes
+
+        starts, remaining = [], with_buffer
+        for _ in lanes:
+            fill = min(remaining, float(WORKING_LANE_CAPACITY_UL))
+            starts.append(fill)
+            remaining -= fill
+
+        plan[reagent] = {
+            "lanes": lanes,
+            "planned_start_per_lane": starts,
+            "estimated_draw_ul": estimated,
+            "with_buffer_ul": with_buffer,
+        }
+    plan["_wash"] = {"lane": WASH_LANE}
 
     liquid_objects = {
         "red":    red_dye,

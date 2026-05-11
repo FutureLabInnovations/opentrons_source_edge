@@ -77,14 +77,27 @@ Labware (load names are the exact strings the OT-2 will look up):
   * slot 9 is left empty
 
 Consumables to prepare before starting:
-  * Red food colouring   - dilute 1:5 in water -> pour ~10 mL into res A1
-  * Yellow food colouring- dilute 1:5 in water -> pour ~10 mL into res A2
-  * Blue food colouring  - dilute 1:5 in water -> pour ~10 mL into res A3
-  * Distilled water - pour ~12 mL each into lanes A4, A5, A6 (3 diluent
-                     lanes; the protocol auto-rotates as each fills up).
-  * Distilled water - pour ~12 mL into lane A12 (multi-channel tip wash).
-  * Total water needed: ~48 mL. No 50 mL Falcon tubes or bulk reservoirs
-    needed - everything lives in the single 12-channel reservoir.
+  At run start the protocol calls build_sourcing_plan() and prints a
+  pre-flight comment block in the app's run log telling the booth crew
+  EXACTLY how much to pour into which lane. The plan is computed from
+  ESTIMATED_DRAW_UL + light planning buffers (3% overhead + 0.5 mL dead
+  volume) and auto-spreads each reagent across as many 12-mL lanes as
+  needed.
+
+  The default worst-case layout (with current ESTIMATED_DRAW_UL values)
+  is approximately:
+
+    A1     : Red Dye   (1:5 in water)         ~11.8 mL
+    A2     : Yellow Dye (1:5 in water)        ~ 9.8 mL
+    A3, A4 : Blue Dye  (1:5 in water)         ~12.9 mL total (2 lanes)
+    A5, A6 : Diluent Water                    ~23.2 mL total (2 lanes)
+    A12    : Wash Water (multi-channel tip rinse) ~12 mL
+
+  Total water needed: ~50 mL distilled. Everything lives in the single
+  12-channel reservoir - no 50 mL Falcon tubes or bulk reservoirs.
+
+  Always confirm the pre-flight comments before pouring; the actual lane
+  assignment may shift if ESTIMATED_DRAW_UL is tuned.
 
 Optional but recommended for booth impact:
   * A white sheet or LED light pad under the OT-2 deck. The plates light
@@ -108,14 +121,12 @@ SETUP INSTRUCTIONS  (in the order the Opentrons app will walk you through)
        slots 3 & 10 = multi-channel tip reservoirs (full racks)
   4. Load the NEST 12-channel reservoir (nest_12_reservoir_15ml) into
      slot 4. Slot 9 stays empty.
-  5. **In the Liquid Setup screen of the Opentrons app**, confirm:
-       slot 4 well A1   -> Red Dye      (~10 mL)
-       slot 4 well A2   -> Yellow Dye   (~10 mL)
-       slot 4 well A3   -> Blue Dye     (~10 mL)
-       slot 4 wells A4-A6 -> Diluent Water (~12 mL each, 3 lanes)
-       slot 4 well A12  -> Wash Water   (~12 mL)
-     Each liquid is registered by the protocol with a display colour so
-     the app shows a coloured swatch for each lane.
+  5. **Read the run-log pre-flight comments** that the protocol prints
+     at run start: each will look like
+       "  red:    est. draw 11.00 mL -> total pour 11.83 mL across ['A1']..."
+     The Opentrons app's Liquid Setup screen reflects the same plan,
+     with a coloured swatch per assigned lane and the matching planned
+     volume. Pour exactly what each comment line asks for.
   6. Load 6 empty thermofisher_96_wellplate_250ul plates into slots
      2, 5, 6, 7, 8 and 11. (This is the custom labware definition you
      have uploaded to the OT-2; the app will recognise the load name.)
@@ -125,6 +136,8 @@ SETUP INSTRUCTIONS  (in the order the Opentrons app will walk you through)
      Increase both to lengthen the show; decrease to compress.
   8. Hit "Start run" - total runtime is ~2 hours.
 """
+
+import math
 
 from opentrons import protocol_api
 
@@ -147,18 +160,33 @@ requirements = {"robotType": "OT-2", "apiLevel": "2.18"}
 # Tunables
 # ---------------------------------------------------------------------------
 
-# NEST 12-channel reservoir lane assignments.
-# Dyes live in A1-A3. Diluent water is split across THREE lanes (A4-A6) so
-# the protocol can rotate to the next lane as each ~12 mL fill runs out;
-# A12 is the dedicated wash lane (gradually picks up trace dye over the
-# course of the run, which is fine because nothing is ever drawn from it).
-RED_LANE, YELLOW_LANE, BLUE_LANE = "A1", "A2", "A3"
-DILUENT_LANES = ["A4", "A5", "A6"]
-WASH_LANE     = "A12"
+# NEST 12-channel reservoir layout.
+# Reagent lanes are *assigned at run time* by build_sourcing_plan() based on
+# each reagent's estimated total draw across the demo. A12 stays reserved for
+# the multi-channel tip-wash bath (no draws, nothing read out of it).
+ASSIGNABLE_LANES = [f"A{i}" for i in range(1, 12)]   # A1..A11
+WASH_LANE        = "A12"
 
-# Safe usable volume per 12-channel reservoir lane (mL spec is 15 mL, we
-# leave a small headroom so the multi-channel never pulls air).
-LANE_USABLE_UL = 12_000
+# Safe usable volume per 12-channel reservoir lane. The NEST spec is 15 mL;
+# 12 mL leaves a small headroom so the multi-channel never pulls air.
+WORKING_LANE_CAPACITY_UL = 12_000
+
+# Planning buffers for build_sourcing_plan() - applied on top of the per-
+# reagent worst-case draw estimate so we always pour slightly more than the
+# protocol expects to use.
+OVERHEAD_FRACTION          = 0.03    # 3% overhead on the estimated draw
+DEAD_VOLUME_PER_REAGENT_UL = 500     # 0.5 mL dead volume per reagent
+
+# Worst-case total drawn per reagent across all six plates (uL). These are
+# eyeballed sums of every aspirate_from_sources() call in the workflows below
+# (multi-channel calls count 8x). Re-derive whenever a workflow's per-well
+# volumes change.
+ESTIMATED_DRAW_UL = {
+    "red":    11_000,
+    "yellow":  9_000,
+    "blue":   12_000,
+    "water":  22_000,
+}
 
 # Single-channel tip-rack sections (1-indexed column ranges, inclusive).
 TIP_SECTIONS = {
@@ -191,6 +219,77 @@ MIX_REPS    = 4
 # ends up at 150 uL total, matching the proven dilution math).
 HALF_STOCK_UL  = STOCK_UL // 2   # 75 uL for two-colour mixes (75 + 75 = 150)
 THIRD_STOCK_UL = STOCK_UL // 3   # 50 uL for three-colour mixes (50*3 = 150)
+
+
+# ---------------------------------------------------------------------------
+# Sourcing planner (lane assignment + planned start volumes)
+# ---------------------------------------------------------------------------
+
+def build_sourcing_plan(estimates_ul=None,
+                        assignable_lanes=None,
+                        wash_lane=WASH_LANE,
+                        lane_capacity_ul=WORKING_LANE_CAPACITY_UL,
+                        overhead_fraction=OVERHEAD_FRACTION,
+                        dead_volume_ul=DEAD_VOLUME_PER_REAGENT_UL):
+    """Assign 12-channel reservoir lanes to each reagent based on the
+    estimated worst-case draw, applying a light overhead + dead-volume
+    buffer.
+
+    Mirrors the structure of the lab's NCBL v13 aliquoting protocol's
+    pre-flight sourcing loop (reagent_source_wells / planned_start_ul_by_well)
+    but adapted to fixed-order reagent assignment for the demo. Lanes are
+    assigned in order [red, yellow, blue, water], A12 stays reserved for the
+    wash bath.
+
+    Returns a dict::
+
+        {
+          "red":   {"lanes": ["A1"], "planned_start_per_lane": [11_830.0],
+                     "estimated_draw_ul": 11_000, "with_buffer_ul": 11_830.0},
+          ...
+          "_wash": {"lane": "A12"},
+        }
+    """
+    if estimates_ul is None:
+        estimates_ul = ESTIMATED_DRAW_UL
+    if assignable_lanes is None:
+        assignable_lanes = list(ASSIGNABLE_LANES)
+
+    plan = {}
+    cursor = 0
+    for reagent in ("red", "yellow", "blue", "water"):
+        estimated = float(estimates_ul[reagent])
+        with_buffer = estimated * (1.0 + overhead_fraction) + dead_volume_ul
+        n_lanes = max(1, math.ceil(with_buffer / lane_capacity_ul))
+
+        if cursor + n_lanes > len(assignable_lanes):
+            raise RuntimeError(
+                f"Sourcing plan: not enough free lanes for '{reagent}'. "
+                f"Needs {n_lanes} lane(s) at {lane_capacity_ul / 1000:.0f} mL each; "
+                f"only {len(assignable_lanes) - cursor} lane(s) remain in {assignable_lanes}."
+            )
+
+        lanes = assignable_lanes[cursor:cursor + n_lanes]
+        cursor += n_lanes
+
+        # Distribute the buffered volume across the assigned lanes, filling
+        # each up to working capacity and parking the remainder in the last.
+        remaining = with_buffer
+        starts = []
+        for _ in lanes:
+            fill = min(remaining, float(lane_capacity_ul))
+            starts.append(fill)
+            remaining -= fill
+
+        plan[reagent] = {
+            "lanes": lanes,
+            "planned_start_per_lane": starts,
+            "estimated_draw_ul": estimated,
+            "with_buffer_ul": with_buffer,
+        }
+
+    plan["_wash"] = {"lane": wash_lane}
+    return plan
 
 
 # ---------------------------------------------------------------------------
@@ -287,13 +386,25 @@ def run(protocol: protocol_api.ProtocolContext):
     rack_multi_a = protocol.load_labware("opentrons_96_tiprack_300ul", 3, "multi tips A")
     rack_multi_b = protocol.load_labware("opentrons_96_tiprack_300ul", 10, "multi tips B")
 
-    # Tell the app where each liquid starts; the app draws a coloured swatch.
-    reservoir[RED_LANE].load_liquid(red_dye, 10_000)
-    reservoir[YELLOW_LANE].load_liquid(yellow_dye, 10_000)
-    reservoir[BLUE_LANE].load_liquid(blue_dye, 10_000)
-    for lane in DILUENT_LANES:
-        reservoir[lane].load_liquid(diluent_water, LANE_USABLE_UL)
-    reservoir[WASH_LANE].load_liquid(wash_water, LANE_USABLE_UL)
+    # =====================================================================
+    # Sourcing plan + Liquid Setup annotations
+    # =====================================================================
+    plan = build_sourcing_plan()
+
+    liquid_objects = {
+        "red":    red_dye,
+        "yellow": yellow_dye,
+        "blue":   blue_dye,
+        "water":  diluent_water,
+    }
+
+    # Tell the app where each reagent starts and how much to pour. The app
+    # draws a coloured swatch on each annotated lane.
+    for reagent in ("red", "yellow", "blue", "water"):
+        for lane, start_ul in zip(plan[reagent]["lanes"],
+                                  plan[reagent]["planned_start_per_lane"]):
+            reservoir[lane].load_liquid(liquid_objects[reagent], start_ul)
+    reservoir[plan["_wash"]["lane"]].load_liquid(wash_water, WORKING_LANE_CAPACITY_UL)
 
     # =====================================================================
     # Pipettes
@@ -309,53 +420,61 @@ def run(protocol: protocol_api.ProtocolContext):
     p300m.flow_rate.dispense = 200
 
     # =====================================================================
-    # Source mapping & volume tracking
+    # Source tracking + within-aspirate lane splitting
     # =====================================================================
-    # Spiritual descendant of the proven protocol's TubeTracker, minus the
-    # cone math (NEST troughs are flat). Any draw beyond the lane cap
-    # aborts the run with a clear message instead of aspirating air.
-    sources = {
-        "red":    reservoir[RED_LANE],
-        "yellow": reservoir[YELLOW_LANE],
-        "blue":   reservoir[BLUE_LANE],
-    }
-    caps_ul = {"red": 10_000, "yellow": 10_000, "blue": 10_000}
-    used_ul = {k: 0 for k in caps_ul}
+    # Per-lane remaining-volume tracker. Ported from the NCBL v13 protocol's
+    # reservoir_remaining_ul + aspirate_from_sources() pattern: an aspirate
+    # call can span multiple lanes, taking what's left in the current lane
+    # and continuing the *same* aspirate from the next one. Multi-channel
+    # draws are tracked at 8x consumption (one lane fills all 8 channels in
+    # parallel for that vol_per_channel).
+    remaining_ul = {}
+    for reagent in ("red", "yellow", "blue", "water"):
+        for lane, start in zip(plan[reagent]["lanes"],
+                               plan[reagent]["planned_start_per_lane"]):
+            remaining_ul[lane] = float(start)
+    current_lane_idx = {r: 0 for r in ("red", "yellow", "blue", "water")}
 
-    def aspirate_tracked(pipette, vol_ul: int, lane: str, channels: int = 1):
-        # For dye lanes (red / yellow / blue) - single lane each, hard cap.
-        draw_ul = vol_ul * channels
-        if used_ul[lane] + draw_ul > caps_ul[lane]:
-            raise RuntimeError(
-                f"Source '{lane}' would be exhausted "
-                f"(used {used_ul[lane]} uL, attempting {draw_ul} uL more, "
-                f"cap {caps_ul[lane]} uL)."
-            )
-        used_ul[lane] += draw_ul
-        pipette.aspirate(vol_ul, sources[lane])
+    def _advance_lane(reagent: str) -> None:
+        current_lane_idx[reagent] += 1
 
-    # Diluent water lives in *multiple* lanes (A4-A6). The protocol
-    # auto-rotates as each lane fills up - same idea as the proven
-    # protocol's TubeTracker stop-before-air check, but applied across a
-    # bank of lanes so we have ~36 mL of water without needing a bulk
-    # reservoir on slot 9.
-    diluent_used = {lane: 0 for lane in DILUENT_LANES}
-    diluent_idx  = [0]   # mutable, index into DILUENT_LANES
+    def _current_lane(reagent: str):
+        lanes = plan[reagent]["lanes"]
+        if current_lane_idx[reagent] >= len(lanes):
+            return None
+        return lanes[current_lane_idx[reagent]]
 
-    def aspirate_diluent(pipette, vol_ul: int, channels: int = 1):
-        draw_ul = vol_ul * channels
-        while diluent_idx[0] < len(DILUENT_LANES):
-            lane = DILUENT_LANES[diluent_idx[0]]
-            if diluent_used[lane] + draw_ul <= LANE_USABLE_UL:
-                diluent_used[lane] += draw_ul
-                pipette.aspirate(vol_ul, reservoir[lane])
-                return
-            # current diluent lane full; advance to the next
-            diluent_idx[0] += 1
-        raise RuntimeError(
-            "Diluent exhausted across all "
-            f"{len(DILUENT_LANES)} lanes; refill A4-A6 with more water."
-        )
+    def aspirate_from_sources(pipette, vol_per_channel_ul: float,
+                              reagent: str, channels: int = 1) -> None:
+        """Aspirate `vol_per_channel_ul` per channel from `reagent`'s
+        assigned lane(s), splitting the call across lanes if the current
+        lane runs low mid-aspirate. Updates `remaining_ul` using the
+        8x-consumption model for multi-channel calls (channels=8)."""
+        remaining_per_channel = float(vol_per_channel_ul)
+        while remaining_per_channel > 0:
+            lane = _current_lane(reagent)
+            if lane is None:
+                raise RuntimeError(
+                    f"'{reagent}' exhausted across {plan[reagent]['lanes']}; "
+                    f"need {remaining_per_channel:.1f} uL/channel more. "
+                    "Refill the assigned lane(s) or bump ESTIMATED_DRAW_UL."
+                )
+            available_total = remaining_ul.get(lane, 0.0)
+            if available_total <= 0:
+                _advance_lane(reagent)
+                continue
+            available_per_channel = available_total / channels
+            step = min(remaining_per_channel, available_per_channel)
+            if step <= 0:
+                _advance_lane(reagent)
+                continue
+            pipette.aspirate(step, reservoir[lane])
+            remaining_ul[lane] = max(0.0, available_total - step * channels)
+            remaining_per_channel -= step
+            if remaining_per_channel > 0:
+                # Drained this lane to satisfy the call; the next iteration
+                # will pick up the next assigned lane and continue.
+                _advance_lane(reagent)
 
     def dispense_and_lift(pipette, vol_ul: int, well, lift_z: int = -2):
         # Proven touch-off-without-touch-tip: dispense above the surface
@@ -400,10 +519,10 @@ def run(protocol: protocol_api.ProtocolContext):
 
     def multi_wash():
         # mix(4, 250) is the proven internal-protocol wash pattern. Wash
-        # water lives in the dedicated A12 lane - it slowly picks up
-        # trace dye over the run, but nothing is ever drawn from it, so
-        # contamination stays inside that one lane.
-        wash_well = reservoir[WASH_LANE]
+        # water lives in the dedicated wash lane (plan["_wash"]["lane"]) -
+        # it slowly picks up trace dye over the run, but nothing is ever
+        # drawn from it, so contamination stays inside that one lane.
+        wash_well = reservoir[plan["_wash"]["lane"]]
         p300m.mix(4, 250, wash_well.bottom(2))
         p300m.blow_out(wash_well.top(-3))
 
@@ -424,7 +543,7 @@ def run(protocol: protocol_api.ProtocolContext):
         column fill in one shot."""
         multi_pick_fresh()
         for col in range(first_col, last_col_exclusive):
-            aspirate_diluent(p300m, vol_per_col, channels=8)
+            aspirate_from_sources(p300m, vol_per_col, "water", channels=8)
             dispense_and_lift(p300m, vol_per_col, plate.columns()[col][0])
         finish_multi(wash_mode)
 
@@ -450,7 +569,7 @@ def run(protocol: protocol_api.ProtocolContext):
         pick_single_tip(color)
         for w in wells:
             target = w if hasattr(w, "top") else plate_lookup(w)
-            aspirate_tracked(p300s, vol_ul, lane)
+            aspirate_from_sources(p300s, vol_ul, lane)
             if mix_after and w is wells[-1]:
                 p300s.dispense(vol_ul, target.bottom(2))
                 p300s.mix(2, MIX_UL, target.bottom(2))
@@ -490,19 +609,19 @@ def run(protocol: protocol_api.ProtocolContext):
         ]:
             pick_single_tip(tip_color)
             for w in wells:
-                aspirate_tracked(p300s, STOCK_UL, lane)
+                aspirate_from_sources(p300s, STOCK_UL, lane)
                 dispense_and_lift(p300s, STOCK_UL, w)
             p300s.drop_tip()
 
         # Purple (R + B) into G/H: red half first, then blue half + mix.
         pick_single_tip("red")
         for w in (col1["G"], col1["H"]):
-            aspirate_tracked(p300s, HALF_STOCK_UL, "red")
+            aspirate_from_sources(p300s, HALF_STOCK_UL, "red")
             p300s.dispense(HALF_STOCK_UL, w.bottom(2))
         p300s.drop_tip()
         pick_single_tip("blue")
         for w in (col1["G"], col1["H"]):
-            aspirate_tracked(p300s, HALF_STOCK_UL, "blue")
+            aspirate_from_sources(p300s, HALF_STOCK_UL, "blue")
             p300s.dispense(HALF_STOCK_UL, w.bottom(2))
             p300s.mix(2, MIX_UL, w.bottom(2))
             p300s.move_to(w.top(z=-2))
@@ -531,7 +650,7 @@ def run(protocol: protocol_api.ProtocolContext):
         # 1) Multi-channel: assay-buffer base in every column.
         multi_pick_fresh()
         for col in range(N_COLS):
-            aspirate_diluent(p300m, base_ul, channels=8)
+            aspirate_from_sources(p300m, base_ul, "water", channels=8)
             dispense_and_lift(p300m, base_ul, plate.columns()[col][0])
         finish_multi(wash_mode)
 
@@ -541,7 +660,7 @@ def run(protocol: protocol_api.ProtocolContext):
             v = round(max_red * (N_COLS - 1 - col) / (N_COLS - 1))
             if v < MIN_DISPENSE_UL:
                 continue
-            aspirate_tracked(p300m, v, "red", channels=8)
+            aspirate_from_sources(p300m, v, "red", channels=8)
             dispense_and_lift(p300m, v, plate.columns()[col][0])
         finish_multi(wash_mode)
 
@@ -553,7 +672,7 @@ def run(protocol: protocol_api.ProtocolContext):
                 continue
             for col in range(N_COLS):
                 w = plate.wells_by_name()[f"{row_letter}{col + 1}"]
-                aspirate_tracked(p300s, v, "blue")
+                aspirate_from_sources(p300s, v, "blue")
                 dispense_and_lift(p300s, v, w)
         p300s.drop_tip()
 
@@ -564,7 +683,7 @@ def run(protocol: protocol_api.ProtocolContext):
         for r in "BCDEFG":
             for c in range(1, N_COLS - 1):
                 w = plate.wells_by_name()[f"{r}{c + 1}"]
-                aspirate_tracked(p300s, indicator, "yellow")
+                aspirate_from_sources(p300s, indicator, "yellow")
                 dispense_and_lift(p300s, indicator, w)
         p300s.drop_tip()
 
@@ -592,14 +711,14 @@ def run(protocol: protocol_api.ProtocolContext):
         for tip_label, lane, cols, overlay in blocks:
             multi_pick_fresh()
             for col in cols:
-                aspirate_tracked(p300m, block_ul, lane, channels=8)
+                aspirate_from_sources(p300m, block_ul, lane, channels=8)
                 dispense_and_lift(p300m, block_ul, plate.columns()[col][0])
             finish_multi(wash_mode)
             if overlay == "blue_overlay":
                 # Y + B = green
                 multi_pick_fresh()
                 for col in cols:
-                    aspirate_tracked(p300m, block_ul, "blue", channels=8)
+                    aspirate_from_sources(p300m, block_ul, "blue", channels=8)
                     dispense_and_lift(p300m, block_ul, plate.columns()[col][0])
                 finish_multi(wash_mode)
 
@@ -631,14 +750,14 @@ def run(protocol: protocol_api.ProtocolContext):
         for col_letter in ("1", "2"):
             for row in "BCDEFGH":
                 w = plate.wells_by_name()[f"{row}{col_letter}"]
-                aspirate_diluent(p300s, std_dil_ul)
+                aspirate_from_sources(p300s, std_dil_ul, "water")
                 dispense_and_lift(p300s, std_dil_ul, w)
         p300s.drop_tip()
 
         pick_single_tip("red")
         for col_letter in ("1", "2"):
             top_well = plate.wells_by_name()[f"A{col_letter}"]
-            aspirate_tracked(p300s, std_col_stock_ul, "red")
+            aspirate_from_sources(p300s, std_col_stock_ul, "red")
             dispense_and_lift(p300s, std_col_stock_ul, top_well)
         # 1:2 vertical dilution down each std column.
         for col_letter in ("1", "2"):
@@ -654,7 +773,7 @@ def run(protocol: protocol_api.ProtocolContext):
         # 2) Multi-channel diluent base in cols 3-10 (the sample region).
         multi_pick_fresh()
         for col in range(2, 10):
-            aspirate_diluent(p300m, sample_base_ul, channels=8)
+            aspirate_from_sources(p300m, sample_base_ul, "water", channels=8)
             dispense_and_lift(p300m, sample_base_ul, plate.columns()[col][0])
         finish_multi(wash_mode)
 
@@ -676,19 +795,19 @@ def run(protocol: protocol_api.ProtocolContext):
             if vol < MIN_DISPENSE_UL:
                 continue
             w = plate.wells_by_name()[w_name]
-            aspirate_tracked(p300s, vol, "red")
+            aspirate_from_sources(p300s, vol, "red")
             dispense_and_lift(p300s, vol, w)
         p300s.drop_tip()
 
         # 4) Multi-channel: positive control (yellow) in col 11.
         multi_pick_fresh()
-        aspirate_tracked(p300m, pos_ctrl_ul, "yellow", channels=8)
+        aspirate_from_sources(p300m, pos_ctrl_ul, "yellow", channels=8)
         dispense_and_lift(p300m, pos_ctrl_ul, plate.columns()[10][0])
         finish_multi(wash_mode)
 
         # 5) Multi-channel: NTC blank (water) in col 12.
         multi_pick_fresh()
-        aspirate_diluent(p300m, blank_ul, channels=8)
+        aspirate_from_sources(p300m, blank_ul, "water", channels=8)
         dispense_and_lift(p300m, blank_ul, plate.columns()[11][0])
         finish_multi(wash_mode)
 
@@ -718,12 +837,12 @@ def run(protocol: protocol_api.ProtocolContext):
         # Orange (A,B) = red + yellow
         pick_single_tip("red")
         for w in ab:
-            aspirate_tracked(p300s, HALF_STOCK_UL, "red")
+            aspirate_from_sources(p300s, HALF_STOCK_UL, "red")
             p300s.dispense(HALF_STOCK_UL, w.bottom(2))
         p300s.drop_tip()
         pick_single_tip("yellow")
         for w in ab:
-            aspirate_tracked(p300s, HALF_STOCK_UL, "yellow")
+            aspirate_from_sources(p300s, HALF_STOCK_UL, "yellow")
             p300s.dispense(HALF_STOCK_UL, w.bottom(2))
             p300s.mix(2, MIX_UL, w.bottom(2))
             p300s.move_to(w.top(z=-2))
@@ -732,12 +851,12 @@ def run(protocol: protocol_api.ProtocolContext):
         # Green (C,D) = yellow + blue
         pick_single_tip("yellow")
         for w in cd:
-            aspirate_tracked(p300s, HALF_STOCK_UL, "yellow")
+            aspirate_from_sources(p300s, HALF_STOCK_UL, "yellow")
             p300s.dispense(HALF_STOCK_UL, w.bottom(2))
         p300s.drop_tip()
         pick_single_tip("blue")
         for w in cd:
-            aspirate_tracked(p300s, HALF_STOCK_UL, "blue")
+            aspirate_from_sources(p300s, HALF_STOCK_UL, "blue")
             p300s.dispense(HALF_STOCK_UL, w.bottom(2))
             p300s.mix(2, MIX_UL, w.bottom(2))
             p300s.move_to(w.top(z=-2))
@@ -746,12 +865,12 @@ def run(protocol: protocol_api.ProtocolContext):
         # Purple (E,F) = red + blue
         pick_single_tip("red")
         for w in ef:
-            aspirate_tracked(p300s, HALF_STOCK_UL, "red")
+            aspirate_from_sources(p300s, HALF_STOCK_UL, "red")
             p300s.dispense(HALF_STOCK_UL, w.bottom(2))
         p300s.drop_tip()
         pick_single_tip("blue")
         for w in ef:
-            aspirate_tracked(p300s, HALF_STOCK_UL, "blue")
+            aspirate_from_sources(p300s, HALF_STOCK_UL, "blue")
             p300s.dispense(HALF_STOCK_UL, w.bottom(2))
             p300s.mix(2, MIX_UL, w.bottom(2))
             p300s.move_to(w.top(z=-2))
@@ -760,17 +879,17 @@ def run(protocol: protocol_api.ProtocolContext):
         # Brown (G,H) = red + yellow + blue (50 uL each = 150 uL stock)
         pick_single_tip("red")
         for w in gh:
-            aspirate_tracked(p300s, THIRD_STOCK_UL, "red")
+            aspirate_from_sources(p300s, THIRD_STOCK_UL, "red")
             p300s.dispense(THIRD_STOCK_UL, w.bottom(2))
         p300s.drop_tip()
         pick_single_tip("yellow")
         for w in gh:
-            aspirate_tracked(p300s, THIRD_STOCK_UL, "yellow")
+            aspirate_from_sources(p300s, THIRD_STOCK_UL, "yellow")
             p300s.dispense(THIRD_STOCK_UL, w.bottom(2))
         p300s.drop_tip()
         pick_single_tip("blue")
         for w in gh:
-            aspirate_tracked(p300s, THIRD_STOCK_UL, "blue")
+            aspirate_from_sources(p300s, THIRD_STOCK_UL, "blue")
             p300s.dispense(THIRD_STOCK_UL, w.bottom(2))
             p300s.mix(2, MIX_UL, w.bottom(2))
             p300s.move_to(w.top(z=-2))
@@ -825,7 +944,7 @@ def run(protocol: protocol_api.ProtocolContext):
             pick_single_tip(tip)
             for w_name in ring_wells:
                 w = plate.wells_by_name()[w_name]
-                aspirate_tracked(p300s, vol, lane)
+                aspirate_from_sources(p300s, vol, lane)
                 dispense_and_lift(p300s, vol, w)
             p300s.drop_tip()
             if secondary is not None:
@@ -833,7 +952,7 @@ def run(protocol: protocol_api.ProtocolContext):
                 pick_single_tip(sec_lane)
                 for w_name in ring_wells:
                     w = plate.wells_by_name()[w_name]
-                    aspirate_tracked(p300s, sec_vol, sec_lane)
+                    aspirate_from_sources(p300s, sec_vol, sec_lane)
                     p300s.dispense(sec_vol, w.bottom(2))
                     p300s.mix(2, MIX_UL, w.bottom(2))
                     p300s.move_to(w.top(z=-2))
@@ -850,6 +969,31 @@ def run(protocol: protocol_api.ProtocolContext):
         plate_mixed_bouquet,
         plate_concentric_rings,
     ]
+
+    # =====================================================================
+    # Pre-flight: reservoir sourcing plan (printed to the app's run log)
+    # =====================================================================
+    protocol.comment("=== Reservoir sourcing plan (NEST 12-channel, slot 4) ===")
+    for reagent in ("red", "yellow", "blue", "water"):
+        info = plan[reagent]
+        per_lane = ", ".join(
+            f"{lane}: pour {start / 1000:.2f} mL"
+            for lane, start in zip(info["lanes"], info["planned_start_per_lane"])
+        )
+        protocol.comment(
+            f"  {reagent:>6}: est. draw {info['estimated_draw_ul'] / 1000:.2f} mL "
+            f"-> total pour {info['with_buffer_ul'] / 1000:.2f} mL across "
+            f"{info['lanes']} | {per_lane}"
+        )
+    protocol.comment(
+        f"  wash:   pour ~{WORKING_LANE_CAPACITY_UL / 1000:.0f} mL into "
+        f"{plan['_wash']['lane']} (no draws, stays in place)"
+    )
+    protocol.comment(
+        "Buffers: "
+        f"+{OVERHEAD_FRACTION * 100:.0f}% overhead, "
+        f"+{DEAD_VOLUME_PER_REAGENT_UL} uL dead volume per reagent."
+    )
 
     protocol.home()
     protocol.set_rail_lights(True)   # booth lights on
@@ -868,14 +1012,21 @@ def run(protocol: protocol_api.ProtocolContext):
                 msg=f"Plate {i + 1}: showing finished plate",
             )
 
-    diluent_breakdown = ", ".join(
-        f"{lane}={diluent_used[lane]}" for lane in DILUENT_LANES
-    )
-    protocol.comment(
-        "Reservoir usage (uL drawn): "
-        f"red={used_ul['red']}, yellow={used_ul['yellow']}, "
-        f"blue={used_ul['blue']} | diluent {diluent_breakdown}"
-    )
+    protocol.comment("=== End-of-run reservoir usage (uL remaining per lane) ===")
+    for reagent in ("red", "yellow", "blue", "water"):
+        lanes = plan[reagent]["lanes"]
+        starts = plan[reagent]["planned_start_per_lane"]
+        per_lane = []
+        total_drawn = 0.0
+        for lane, start in zip(lanes, starts):
+            left = remaining_ul.get(lane, 0.0)
+            drawn = max(0.0, start - left)
+            total_drawn += drawn
+            per_lane.append(f"{lane}: {left:.0f} left / drew {drawn:.0f}")
+        protocol.comment(
+            f"  {reagent:>6}: drew {total_drawn/1000:.2f} mL total | "
+            + "; ".join(per_lane)
+        )
     protocol.comment(
         "Demo complete - thanks for visiting the Future Lab Innovations booth!"
     )

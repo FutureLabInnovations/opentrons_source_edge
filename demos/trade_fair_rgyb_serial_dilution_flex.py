@@ -103,7 +103,9 @@ requirements = {"robotType": "Flex", "apiLevel": "2.16"}
 
 class LaneExhaustedError(RuntimeError):
     """Raised when a lane cannot satisfy an aspirate without the tip
-    rising above the liquid surface (i.e. would aspirate air)."""
+    rising above the liquid surface. The protocol is configured to
+    pour generously so this never fires; if it does, the booth crew
+    underfilled the lane."""
 
 
 class LaneTracker:
@@ -112,9 +114,9 @@ class LaneTracker:
 
     Use aspirate_height(vol_ul) to get a Z target (mm above well floor)
     for the NEXT aspirate of vol_ul uL, and to atomically decrement the
-    remaining volume. Raises LaneExhaustedError when the post-aspirate
-    surface would fall below (min_height_mm + safety_margin_mm) - the
-    caller is expected to rotate to a fresh lane in that case.
+    remaining volume. Raises LaneExhaustedError if the lane is too low -
+    the protocol does NOT rotate lanes; every lane is pre-poured with
+    enough volume to satisfy its workload + a comfortable buffer.
     """
 
     def __init__(self, initial_volume_ml, well,
@@ -292,13 +294,15 @@ def run(protocol: protocol_api.ProtocolContext):
     diluent_pour_ul  = pour_total
     diluent_per_lane = diluent_pour_ul / n_diluent_lanes
 
-    # One lane per colour (small volumes, easily fits in a single lane).
-    # Pour budget = need + 3% overhead + dead-volume + lane reserve.
+    # One lane per colour. Pour budget = need + 3% overhead + dead-volume
+    # + lane reserve, with a hard 5 mL floor (booth-spec minimum) so the
+    # lane stays comfortably full for the entire 8 x 150 uL stock load.
     stock_need_per_colour_ul = 8 * STOCK_UL                  # 8 wells * 150 uL
-    stock_pour_ul            = (
+    stock_pour_ul            = max(
+        5_000.0,
         stock_need_per_colour_ul * (1.0 + OVERHEAD_FRACTION)
         + DEAD_VOLUME_UL
-        + LANE_UNUSABLE_RESERVE
+        + LANE_UNUSABLE_RESERVE,
     )
 
     DILUENT_LANE_NAMES = ["A4", "A5", "A6", "A7"][:n_diluent_lanes]

@@ -125,17 +125,24 @@ requirements = {"robotType": "OT-2", "apiLevel": "2.16"}
 # Liquid-tracking classes
 # ===========================================================================
 
+class LaneExhaustedError(RuntimeError):
+    """Raised when a lane cannot satisfy an aspirate without the tip
+    rising above the liquid surface (i.e. would aspirate air)."""
+
+
 class LaneTracker:
     """Tracks remaining volume + liquid-surface height for a single
     12-channel reservoir lane. Flat rectangular trough (no cone math).
 
     Use aspirate_height(vol_ul) to get a Z target (mm above well floor)
     for the NEXT aspirate of vol_ul uL, and to atomically decrement the
-    remaining volume.
+    remaining volume. Raises LaneExhaustedError when the post-aspirate
+    surface would fall below (min_height_mm + safety_margin_mm) - the
+    caller is expected to rotate to a fresh lane in that case.
     """
 
     def __init__(self, initial_volume_ml, well,
-                 safety_margin_mm=3.0, min_height_mm=2.0):
+                 safety_margin_mm=2.0, min_height_mm=1.0):
         self.well = well
         self.current_volume_ul = float(initial_volume_ml) * 1000.0
         self.max_volume_ul = float(well.max_volume)
@@ -153,6 +160,12 @@ class LaneTracker:
             d = float(getattr(well, "diameter", 8.0))
             self.area_mm2 = math.pi * (d / 2.0) ** 2
 
+        # Volume that has to stay behind so the tip never rises above
+        # the liquid surface. Anything at or below this is unrecoverable.
+        self.unusable_volume_ul = (
+            (self.safety_margin_mm + self.min_height_mm) * self.area_mm2
+        )
+
         if self.current_volume_ul > self.max_volume_ul:
             raise ValueError(
                 f"LaneTracker({well}): initial {initial_volume_ml} mL "
@@ -162,19 +175,26 @@ class LaneTracker:
     def surface_height_mm(self):
         return self.current_volume_ul / self.area_mm2
 
+    def can_supply(self, vol_ul):
+        """Return True iff aspirating vol_ul would leave the surface
+        at or above (min_height_mm + safety_margin_mm)."""
+        return (self.current_volume_ul - vol_ul) >= self.unusable_volume_ul
+
     def aspirate_height(self, vol_ul):
         """Decrement the tracker by vol_ul uL and return the tip target
-        height (mm above well floor) for that aspirate - just below the
-        post-aspirate liquid surface so the tip stays submerged."""
-        if vol_ul > self.current_volume_ul:
-            raise ValueError(
-                f"LaneTracker({self.well}): need {vol_ul:.1f} uL but "
-                f"only {self.current_volume_ul:.1f} uL remaining."
+        height (mm above well floor) for that aspirate - safety_margin_mm
+        below the post-aspirate liquid surface so the tip stays submerged.
+        Raises LaneExhaustedError if the lane can't safely supply vol_ul."""
+        if not self.can_supply(vol_ul):
+            raise LaneExhaustedError(
+                f"LaneTracker({self.well}): only {self.current_volume_ul:.0f} uL "
+                f"remaining ({self.surface_height_mm():.2f} mm surface), need "
+                f"{vol_ul:.1f} uL without dropping below "
+                f"{self.unusable_volume_ul:.0f} uL safe-floor reserve."
             )
         new_volume_ul = self.current_volume_ul - vol_ul
         new_surface_mm = new_volume_ul / self.area_mm2
-        target_mm = max(self.min_height_mm,
-                        new_surface_mm - self.safety_margin_mm)
+        target_mm = new_surface_mm - self.safety_margin_mm
         self.current_volume_ul = new_volume_ul
         return target_mm
 
@@ -254,20 +274,52 @@ def run(protocol: protocol_api.ProtocolContext):
     # -----------------------------------------------------------------------
     # Smart calculations (per-reagent need + pour recommendation)
     # -----------------------------------------------------------------------
+    # Compute the per-lane unusable reserve from the actual reservoir
+    # geometry. This is the volume that has to stay behind so the tip
+    # never rises above the liquid surface (= safety_margin + min_height
+    # mm above the floor, times the lane cross-section). Pour budgets
+    # below include this reserve per assigned lane so we always have
+    # enough USABLE volume to satisfy every aspirate.
+    _probe = reservoir["A1"]
+    _lane_length = float(getattr(_probe, "length", None) or 8.0)
+    _lane_width  = float(getattr(_probe, "width",  None) or 70.0)
+    LANE_AREA_MM2          = _lane_length * _lane_width
+    LANE_UNUSABLE_RESERVE  = (2.0 + 1.0) * LANE_AREA_MM2   # safety + min_height
+
     n_plates = len(plates)
 
     diluent_need_per_plate_ul = 11 * 8 * DILUENT_UL          # 11 cols * 8 rows
     diluent_total_need_ul     = diluent_need_per_plate_ul * n_plates
-    diluent_pour_ul           = (
-        diluent_total_need_ul * (1.0 + OVERHEAD_FRACTION) + DEAD_VOLUME_UL
-    )
-    n_diluent_lanes  = max(1, math.ceil(diluent_pour_ul / LANE_USABLE_UL))
+
+    # Iteratively pick the smallest lane count whose per-lane pour
+    # (need_share + per-lane reserve + buffers) still fits inside the
+    # working lane capacity. Pour budget grows with lane count because
+    # each extra lane adds its own unusable reserve.
+    n_diluent_lanes = 1
+    while True:
+        pour_total = (
+            diluent_total_need_ul * (1.0 + OVERHEAD_FRACTION)
+            + DEAD_VOLUME_UL
+            + LANE_UNUSABLE_RESERVE * n_diluent_lanes
+        )
+        if pour_total / n_diluent_lanes <= LANE_USABLE_UL:
+            break
+        n_diluent_lanes += 1
+        if n_diluent_lanes > 10:
+            raise RuntimeError(
+                "Could not fit diluent budget within 10 lanes - bump "
+                "LANE_USABLE_UL or check the cross-section calculation."
+            )
+    diluent_pour_ul  = pour_total
     diluent_per_lane = diluent_pour_ul / n_diluent_lanes
 
-    # One lane per colour (small volumes, easily fits in a single 13 mL lane)
+    # One lane per colour (small volumes, easily fits in a single lane).
+    # Pour budget = need + 3% overhead + dead-volume + lane reserve.
     stock_need_per_colour_ul = 8 * STOCK_UL                  # 8 wells * 150 uL
     stock_pour_ul            = (
-        stock_need_per_colour_ul * (1.0 + OVERHEAD_FRACTION) + DEAD_VOLUME_UL
+        stock_need_per_colour_ul * (1.0 + OVERHEAD_FRACTION)
+        + DEAD_VOLUME_UL
+        + LANE_UNUSABLE_RESERVE
     )
 
     DILUENT_LANE_NAMES = ["A4", "A5", "A6", "A7"][:n_diluent_lanes]
@@ -342,10 +394,11 @@ def run(protocol: protocol_api.ProtocolContext):
 
     def aspirate_diluent(vol_ul):
         """Returns (well, Z target mm) for the next diluent aspirate.
-        Auto-rotates to the next lane when the current one runs low."""
+        Auto-rotates to the next lane when can_supply() returns False
+        (i.e. before the tip would rise above the liquid surface)."""
         while diluent_idx[0] < len(diluent_trackers):
             t = diluent_trackers[diluent_idx[0]]
-            if t.current_volume_ul >= vol_ul:
+            if t.can_supply(vol_ul):
                 return t.well, t.aspirate_height(vol_ul)
             diluent_idx[0] += 1
         raise RuntimeError(

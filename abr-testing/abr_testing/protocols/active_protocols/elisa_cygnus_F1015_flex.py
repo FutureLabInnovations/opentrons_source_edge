@@ -1,5 +1,10 @@
 """
-Cygnus F1015 P. pastoris HCP ELISA - semi-automated on the Opentrons OT-2.
+Cygnus F1015 P. pastoris HCP ELISA - semi-automated on the Opentrons Flex.
+
+Flex port of abr_testing/protocols/active_protocols/elisa_cygnus_F1015_ot2.py.
+Same preconditions: 1-4 pure samples per run, Nunc MaxiSorp plate, 1.5 mL
+LoBind tubes, NEST 12-well reservoir, manual incubation + 4x wash between
+phases.
 
 Workflow:
   Phase A (automated):
@@ -26,16 +31,16 @@ MaxiSorp plate.
 from opentrons import protocol_api
 
 metadata = {
-    "protocolName": "Cygnus F1015 P. pastoris HCP ELISA (semi-automated)",
+    "protocolName": "Cygnus F1015 P. pastoris HCP ELISA - Flex (semi-automated)",
     "author": "Eurogentec protocol development",
     "description": (
-        "Semi-automated ELISA on the OT-2 for the Cygnus F1015 kit. "
-        "OT-2 handles steps 1-2 and 5-7; incubation and 4x wash are manual."
+        "Semi-automated ELISA on the Flex for the Cygnus F1015 kit. "
+        "Flex handles steps 1-2 and 5-7; incubation and 4x wash are manual."
     ),
     "source": "",
 }
 
-requirements = {"robotType": "OT-2", "apiLevel": "2.18"}
+requirements = {"robotType": "Flex", "apiLevel": "2.18"}
 
 
 # -----------------------------------------------------------------------------
@@ -79,13 +84,18 @@ def run(protocol: protocol_api.ProtocolContext) -> None:
     dry_run: bool = protocol.params.dry_run  # type: ignore[attr-defined]
 
     # -------------------------------------------------------------------------
+    # Trash (required on Flex)
+    # -------------------------------------------------------------------------
+    protocol.load_trash_bin("A3")
+
+    # -------------------------------------------------------------------------
     # Labware
     # -------------------------------------------------------------------------
     # ELISA plate: Thermo Nunc MaxiSorp. The repo only ships the "lockwell" strip
     # variant; if the lab uses a non-lockwell MaxiSorp the loadName should be
     # replaced with the appropriate custom definition. [UNVERIFIED]
     elisa_plate = protocol.load_labware(
-        "thermofisher_nunc_maxisorp_lockwell_elisa", location=1, label="ELISA plate"
+        "thermofisher_nunc_maxisorp_lockwell_elisa", location="D1", label="ELISA plate"
     )
 
     # Sample / standard tubes - 1.5 mL Eppendorf. The DNA/Protein LoBind tubes
@@ -93,33 +103,45 @@ def run(protocol: protocol_api.ProtocolContext) -> None:
     # the loadName below is the closest match in shared-data. [UNVERIFIED]
     tube_rack = protocol.load_labware(
         "opentrons_24_tuberack_eppendorf_1.5ml_safelock_snapcap",
-        location=2,
+        location="D2",
         label="Standards + samples",
     )
 
     # Bulk reagents: NEST 12-well reservoir.
     reservoir = protocol.load_labware(
-        "nest_12_reservoir_15ml", location=3, label="Reagents"
+        "nest_12_reservoir_15ml", location="C1", label="Reagents"
     )
 
     tiprack_single = protocol.load_labware(
-        "opentrons_96_tiprack_300ul", location=4, label="P300 tips (single)"
+        "opentrons_flex_96_tiprack_200ul",
+        location="B2",
+        label="Flex 200 uL tips (single)",
     )
     tiprack_multi = protocol.load_labware(
-        "opentrons_96_tiprack_300ul", location=5, label="P300 tips (multi)"
+        "opentrons_flex_96_tiprack_200ul",
+        location="B3",
+        label="Flex 200 uL tips (multi)",
     )
     tiprack_spare = protocol.load_labware(
-        "opentrons_96_tiprack_300ul", location=6, label="P300 tips (spare)"
+        "opentrons_flex_96_tiprack_200ul",
+        location="C2",
+        label="Flex 200 uL tips (spare)",
     )
 
     # -------------------------------------------------------------------------
     # Pipettes
     # -------------------------------------------------------------------------
-    p300_single = protocol.load_instrument(
-        "p300_single_gen2", mount="left", tip_racks=[tiprack_single, tiprack_spare]
+    # 1-channel for sample/standard transfers from tubes; 8-channel for
+    # column-wise reagent distribution.
+    p1000_single = protocol.load_instrument(
+        "flex_1channel_1000",
+        mount="left",
+        tip_racks=[tiprack_single, tiprack_spare],
     )
-    p300_multi = protocol.load_instrument(
-        "p300_multi_gen2", mount="right", tip_racks=[tiprack_multi]
+    p1000_multi = protocol.load_instrument(
+        "flex_8channel_1000",
+        mount="right",
+        tip_racks=[tiprack_multi],
     )
 
     # -------------------------------------------------------------------------
@@ -173,9 +195,6 @@ def run(protocol: protocol_api.ProtocolContext) -> None:
         display_color="#e74c3c",
     )
 
-    # Reagent volumes loaded by the user before the run.
-    # Each used column needs 8 channels * 100 uL = 800 uL per reagent dispense.
-    # [UNVERIFIED] - confirm kit aliquot.
     used_columns = 2 if RUN_IN_DUPLICATE else 1
     reagent_volume_per_column = 8 * 100  # uL, multi-channel full column
     reagent_total_with_margin = used_columns * reagent_volume_per_column + 500
@@ -194,10 +213,6 @@ def run(protocol: protocol_api.ProtocolContext) -> None:
     # -------------------------------------------------------------------------
     # Plate layout
     # -------------------------------------------------------------------------
-    # Column 1 holds blank (A) + 6 standards (B..G) + sample 1 (H).
-    # Column 2 is the duplicate of column 1 (if RUN_IN_DUPLICATE).
-    # Samples beyond #1 fill row H of subsequent column pairs (cols 3-4, 5-6, 7-8).
-    # This keeps the layout column-wise so the P300 multi can address whole columns.
     layout_columns: list[str] = ["1"]
     if RUN_IN_DUPLICATE:
         layout_columns.append("2")
@@ -210,7 +225,6 @@ def run(protocol: protocol_api.ProtocolContext) -> None:
     def plate_well(column: str, row_letter: str) -> protocol_api.Well:
         return elisa_plate.wells_by_name()[f"{row_letter}{column}"]
 
-    # Build the (tube -> destination wells) map for step 1.
     standards_and_samples: list[tuple[protocol_api.Well, list[protocol_api.Well]]] = []
 
     base_pair = [layout_columns[0]]
@@ -245,24 +259,24 @@ def run(protocol: protocol_api.ProtocolContext) -> None:
     # -------------------------------------------------------------------------
     protocol.comment("=== Step 1: dispense standards, blank, and samples ===")
     for source_tube, destinations in standards_and_samples:
-        p300_single.pick_up_tip()
+        p1000_single.pick_up_tip()
         for dest in destinations:
-            p300_single.aspirate(SAMPLE_VOLUME_UL, source_tube.bottom(z=2))
-            p300_single.dispense(SAMPLE_VOLUME_UL, dest.bottom(z=2))
-            p300_single.blow_out(dest.top(z=-2))
-        p300_single.drop_tip()
+            p1000_single.aspirate(SAMPLE_VOLUME_UL, source_tube.bottom(z=2))
+            p1000_single.dispense(SAMPLE_VOLUME_UL, dest.bottom(z=2))
+            p1000_single.blow_out(dest.top(z=-2))
+        p1000_single.drop_tip()
 
     # -------------------------------------------------------------------------
     # Phase A - Step 2: dispense HRP conjugate to all used columns
     # -------------------------------------------------------------------------
     protocol.comment("=== Step 2: dispense anti-HCP HRP conjugate ===")
-    p300_multi.pick_up_tip()
+    p1000_multi.pick_up_tip()
     for col in layout_columns:
         top_well = plate_well(col, "A")
-        p300_multi.aspirate(CONJUGATE_VOLUME_UL, hrp_conjugate.bottom(z=2))
-        p300_multi.dispense(CONJUGATE_VOLUME_UL, top_well.bottom(z=2))
-        p300_multi.blow_out(top_well.top(z=-2))
-    p300_multi.drop_tip()
+        p1000_multi.aspirate(CONJUGATE_VOLUME_UL, hrp_conjugate.bottom(z=2))
+        p1000_multi.dispense(CONJUGATE_VOLUME_UL, top_well.bottom(z=2))
+        p1000_multi.blow_out(top_well.top(z=-2))
+    p1000_multi.drop_tip()
 
     # -------------------------------------------------------------------------
     # Manual incubation + 4x wash
@@ -272,20 +286,20 @@ def run(protocol: protocol_api.ProtocolContext) -> None:
         "  1. Seal the ELISA plate.\n"
         "  2. Incubate per the F1015 kit manual (time + shaking per mode d'emploi).\n"
         "  3. Wash 4x with wash buffer (~350 uL per well per wash).\n"
-        "  4. Blot the plate dry, return it to slot 1, and press Resume."
+        "  4. Blot the plate dry, return it to slot D1, and press Resume."
     )
 
     # -------------------------------------------------------------------------
     # Phase B - Step 5: dispense TMB substrate
     # -------------------------------------------------------------------------
     protocol.comment("=== Step 5: dispense TMB substrate ===")
-    p300_multi.pick_up_tip()
+    p1000_multi.pick_up_tip()
     for col in layout_columns:
         top_well = plate_well(col, "A")
-        p300_multi.aspirate(TMB_VOLUME_UL, tmb_substrate.bottom(z=2))
-        p300_multi.dispense(TMB_VOLUME_UL, top_well.bottom(z=2))
-        p300_multi.blow_out(top_well.top(z=-2))
-    p300_multi.drop_tip()
+        p1000_multi.aspirate(TMB_VOLUME_UL, tmb_substrate.bottom(z=2))
+        p1000_multi.dispense(TMB_VOLUME_UL, top_well.bottom(z=2))
+        p1000_multi.blow_out(top_well.top(z=-2))
+    p1000_multi.drop_tip()
 
     # -------------------------------------------------------------------------
     # Phase B - Step 6: substrate incubation
@@ -305,13 +319,13 @@ def run(protocol: protocol_api.ProtocolContext) -> None:
     # Phase B - Step 7: dispense stop solution
     # -------------------------------------------------------------------------
     protocol.comment("=== Step 7: dispense Stop solution ===")
-    p300_multi.pick_up_tip()
+    p1000_multi.pick_up_tip()
     for col in layout_columns:
         top_well = plate_well(col, "A")
-        p300_multi.aspirate(STOP_VOLUME_UL, stop_solution.bottom(z=2))
-        p300_multi.dispense(STOP_VOLUME_UL, top_well.bottom(z=2))
-        p300_multi.blow_out(top_well.top(z=-2))
-    p300_multi.drop_tip()
+        p1000_multi.aspirate(STOP_VOLUME_UL, stop_solution.bottom(z=2))
+        p1000_multi.dispense(STOP_VOLUME_UL, top_well.bottom(z=2))
+        p1000_multi.blow_out(top_well.top(z=-2))
+    p1000_multi.drop_tip()
 
     protocol.pause(
         "Step 8 (manual): read absorbance at 450 nm on the plate reader "

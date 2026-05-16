@@ -1,36 +1,56 @@
 """
 Cygnus F1015 P. pastoris HCP ELISA - semi-automated on the Opentrons OT-2.
 
+Implements the "stamping plate" workflow recommended in Cygnus's
+"Mapping and Loading your HCP ELISA Plate" best-practice guide:
+  1. The single-channel pipette pre-loads a low-binding source plate with
+     the full standard curve + samples in their final column layout.
+  2. The 8-channel multichannel "stamps" each loaded column from the source
+     plate into the assay plate in one shot, minimising positional drift.
+  3. Reagent additions (HRP, TMB, Stop) are also multichannel by column.
+
 Workflow:
   Phase A (automated):
-    - Step 1: dispense standards + samples (100 uL each well) into a Nunc MaxiSorp plate.
-    - Step 2: dispense anti-HCP HRP conjugate (100 uL each well) from the reservoir.
+    - Pre-load source plate with standards + samples (single-channel).
+    - Step 1: stamp source plate -> assay plate (multichannel, 100 uL/well).
+    - Step 2: dispense anti-HCP HRP conjugate (multichannel, 100 uL/well).
   Manual off-deck:
-    - Step 3: incubation with shaking (per kit manual).
-    - Step 4: 4x wash with wash buffer (~350 uL each, per kit manual).
+    - Step 3: incubation with shaking (per F1015 kit manual).
+    - Step 4: 4x wash with wash buffer (Cygnus standard; volume per F1015 manual).
   Phase B (automated):
-    - Step 5: dispense TMB substrate (100 uL each well).
-    - Step 6: substrate incubation in the dark (30 min, on-deck delay).
-    - Step 7: dispense Stop solution (100 uL each well).
+    - Step 5: dispense TMB substrate (multichannel, 100 uL/well).
+    - Step 6: substrate incubation in the dark (timed delay).
+    - Step 7: dispense Stop solution (multichannel, 100 uL/well).
   Manual:
     - Step 8: read absorbance at 450 nm on a plate reader.
 
-[UNVERIFIED] per-well volumes (100 uL chosen as Cygnus default).
-[UNVERIFIED] standard curve count (6 standards + blank, duplicate).
-[UNVERIFIED] substrate incubation (30 min default).
-[UNVERIFIED] exact Nunc MaxiSorp loadName - using the lockwell variant present in
-shared-data; swap for a non-lockwell custom definition if the lab uses a flat 96-well
-MaxiSorp plate.
+Verified against Cygnus product literature:
+  - Sequential sample then conjugate (NOT premixed).
+  - 100 uL per well for sample, conjugate, TMB, Stop.
+  - 4x wash cycle.
+  - F143 standard set: 0, 1, 4, 20, 75, 250 ng/mL (6 standards; "Std 0" IS the blank).
+  - Cygnus recommends duplicate as the minimum, triplicate as best practice.
+
+Still [UNVERIFIED] (kit-specific, requires the F1015 mode d'emploi):
+  - Sample/conjugate incubation time + shaking speed.
+  - Substrate (TMB) incubation time -- 30 min assumed (3G convention).
+  - Wash buffer volume per well -- 300 uL assumed (industry default).
+  - Nunc MaxiSorp loadName -- using the lockwell-strip variant present in
+    shared-data; swap for a non-lockwell custom labware if the lab uses a
+    full 96-well flat MaxiSorp plate.
+  - LoBind 1.5 mL tube compatibility with the SafeLock 24-tube rack.
 """
 
 from opentrons import protocol_api
 
 metadata = {
-    "protocolName": "Cygnus F1015 P. pastoris HCP ELISA (semi-automated)",
+    "protocolName": "Cygnus F1015 P. pastoris HCP ELISA - OT-2 (stamping workflow)",
     "author": "Eurogentec protocol development",
     "description": (
         "Semi-automated ELISA on the OT-2 for the Cygnus F1015 kit. "
-        "OT-2 handles steps 1-2 and 5-7; incubation and 4x wash are manual."
+        "Uses Cygnus's recommended stamping-plate workflow: pre-load a "
+        "source plate column-wise, then multichannel-stamp into the assay "
+        "plate. Manual incubation + 4x wash between phases."
     ),
     "source": "",
 }
@@ -39,21 +59,15 @@ requirements = {"robotType": "OT-2", "apiLevel": "2.18"}
 
 
 # -----------------------------------------------------------------------------
-# Configuration
+# Configuration (constants verified against Cygnus literature)
 # -----------------------------------------------------------------------------
+PER_WELL_VOLUME_UL = 100  # Sample, conjugate, TMB, Stop -- all 100 uL (Cygnus).
+SOURCE_WELL_VOLUME_UL = 120  # 100 uL stamped + 20 uL dead volume in source.
+NUM_STANDARDS = 6  # F143 set: 0, 1, 4, 20, 75, 250 ng/mL (the 0 standard IS the blank).
+WASH_COUNT = 4  # Cygnus 3G procedure: 4x wash. [UNVERIFIED] wash volume below.
+WASH_VOLUME_UL = 300  # [UNVERIFIED] - confirm in F1015 manual.
 
-# Volumes per well (uL). [UNVERIFIED] - confirm against the F1015 mode d'emploi.
-SAMPLE_VOLUME_UL = 100
-CONJUGATE_VOLUME_UL = 100
-TMB_VOLUME_UL = 100
-STOP_VOLUME_UL = 100
-
-# Standard curve. [UNVERIFIED] - Cygnus F1015 commonly ships 6 standards + a zero/blank.
-NUM_STANDARDS = 6
-INCLUDE_BLANK = True
-RUN_IN_DUPLICATE = True
-
-# Substrate incubation, step 6. [UNVERIFIED] - confirm in kit manual.
+# [UNVERIFIED] - confirm in the F1015 mode d'emploi.
 SUBSTRATE_INCUBATION_MINUTES = 30
 
 
@@ -66,6 +80,14 @@ def add_parameters(parameters: protocol_api.Parameters) -> None:
         minimum=1,
         maximum=4,
     )
+    parameters.add_int(
+        variable_name="num_replicates",
+        display_name="Replicates per sample/standard",
+        description="Cygnus minimum is 2 (duplicate); 3 (triplicate) gives tighter CVs.",
+        default=2,
+        minimum=2,
+        maximum=3,
+    )
     parameters.add_bool(
         variable_name="dry_run",
         display_name="Dry run",
@@ -74,63 +96,108 @@ def add_parameters(parameters: protocol_api.Parameters) -> None:
     )
 
 
+def _plan_columns(num_samples: int, num_replicates: int) -> list[list[dict]]:
+    """Return one column-spec per assay-plate column. Each column-spec is a
+    list of 8 dicts (rows A..H) describing the source-plate content.
+
+    Layout per column (8 rows):
+      A..F: Std 0..Std 5 (the 6 F143 standards; Std 0 = blank).
+      G:    First sample in this column pair.
+      H:    Second sample in this column pair (or diluent filler if absent).
+
+    Sample pairs map: column pair 0 -> samples 0,1; pair 1 -> samples 2,3.
+    For each pair we emit `num_replicates` adjacent columns. The standard
+    curve is re-run in each column so the multichannel always stamps a full
+    column with no wasted reagent.
+    """
+    sample_pair_count = max(1, (num_samples + 1) // 2)
+    columns: list[list[dict]] = []
+    for pair_idx in range(sample_pair_count):
+        for _rep in range(num_replicates):
+            col: list[dict] = []
+            for std_idx in range(NUM_STANDARDS):
+                col.append({"kind": "standard", "index": std_idx})
+            for slot in range(2):  # G, H
+                sample_idx = pair_idx * 2 + slot
+                if sample_idx < num_samples:
+                    col.append({"kind": "sample", "index": sample_idx})
+                else:
+                    col.append({"kind": "diluent", "index": 0})
+            columns.append(col)
+    return columns
+
+
 def run(protocol: protocol_api.ProtocolContext) -> None:
     num_samples: int = protocol.params.num_samples  # type: ignore[attr-defined]
+    num_replicates: int = protocol.params.num_replicates  # type: ignore[attr-defined]
     dry_run: bool = protocol.params.dry_run  # type: ignore[attr-defined]
+
+    column_plan = _plan_columns(num_samples, num_replicates)
+    used_column_count = len(column_plan)
 
     # -------------------------------------------------------------------------
     # Labware
     # -------------------------------------------------------------------------
-    # ELISA plate: Thermo Nunc MaxiSorp. The repo only ships the "lockwell" strip
-    # variant; if the lab uses a non-lockwell MaxiSorp the loadName should be
-    # replaced with the appropriate custom definition. [UNVERIFIED]
-    elisa_plate = protocol.load_labware(
-        "thermofisher_nunc_maxisorp_lockwell_elisa", location=1, label="ELISA plate"
+    # Assay plate: Thermo Nunc MaxiSorp (lockwell strip variant in shared-data;
+    # swap for the lab's actual MaxiSorp definition if non-lockwell). [UNVERIFIED]
+    assay_plate = protocol.load_labware(
+        "thermofisher_nunc_maxisorp_lockwell_elisa",
+        location=1,
+        label="Assay plate (Nunc MaxiSorp)",
     )
 
-    # Sample / standard tubes - 1.5 mL Eppendorf. The DNA/Protein LoBind tubes
-    # (Cat. 022431021 / 022431081) share the SafeLock footprint in practice;
-    # the loadName below is the closest match in shared-data. [UNVERIFIED]
+    source_plate = protocol.load_labware(
+        "nest_96_wellplate_200ul_flat",
+        location=4,
+        label="Source/stamping plate",
+    )
+
+    # Standards (6 vials) + 1-4 samples + diluent. The 24-tube rack is 4 rows
+    # (A-D) x 6 cols (1-6). [UNVERIFIED] whether LoBind tubes (non-SafeLock)
+    # geometrically match this rack -- treated as compatible.
     tube_rack = protocol.load_labware(
         "opentrons_24_tuberack_eppendorf_1.5ml_safelock_snapcap",
         location=2,
-        label="Standards + samples",
+        label="Standards + samples + diluent",
     )
 
-    # Bulk reagents: NEST 12-well reservoir.
     reservoir = protocol.load_labware(
-        "nest_12_reservoir_15ml", location=3, label="Reagents"
+        "nest_12_reservoir_15ml", location=3, label="Bulk reagents"
     )
 
     tiprack_single = protocol.load_labware(
-        "opentrons_96_tiprack_300ul", location=4, label="P300 tips (single)"
+        "opentrons_96_tiprack_300ul", location=5, label="P300 tips (single)"
     )
-    tiprack_multi = protocol.load_labware(
-        "opentrons_96_tiprack_300ul", location=5, label="P300 tips (multi)"
+    tiprack_multi_a = protocol.load_labware(
+        "opentrons_96_tiprack_300ul", location=6, label="P300 tips (multi A)"
     )
-    tiprack_spare = protocol.load_labware(
-        "opentrons_96_tiprack_300ul", location=6, label="P300 tips (spare)"
+    tiprack_multi_b = protocol.load_labware(
+        "opentrons_96_tiprack_300ul", location=7, label="P300 tips (multi B)"
     )
 
     # -------------------------------------------------------------------------
     # Pipettes
     # -------------------------------------------------------------------------
     p300_single = protocol.load_instrument(
-        "p300_single_gen2", mount="left", tip_racks=[tiprack_single, tiprack_spare]
+        "p300_single_gen2", mount="left", tip_racks=[tiprack_single]
     )
     p300_multi = protocol.load_instrument(
-        "p300_multi_gen2", mount="right", tip_racks=[tiprack_multi]
+        "p300_multi_gen2",
+        mount="right",
+        tip_racks=[tiprack_multi_a, tiprack_multi_b],
     )
 
     # -------------------------------------------------------------------------
     # Tube + reservoir assignments
     # -------------------------------------------------------------------------
-    # The 24-tube rack is 4 rows (A-D) x 6 cols (1-6).
-    # Layout: standards in A1..A6, blank in B1, samples in C1..C4.
-    blank_tube = tube_rack.wells_by_name()["B1"] if INCLUDE_BLANK else None
+    # Tube rack layout (4 rows x 6 cols):
+    #   A1..A6 -> Std 0..Std 5
+    #   B1     -> Sample diluent
+    #   C1..C4 -> Sample 1..Sample 4
     standard_tubes = [
         tube_rack.wells_by_name()[f"A{i + 1}"] for i in range(NUM_STANDARDS)
     ]
+    diluent_tube = tube_rack.wells_by_name()["B1"]
     sample_tubes = [
         tube_rack.wells_by_name()[f"C{i + 1}"] for i in range(num_samples)
     ]
@@ -140,16 +207,19 @@ def run(protocol: protocol_api.ProtocolContext) -> None:
     stop_solution = reservoir.wells_by_name()["A3"]
 
     # -------------------------------------------------------------------------
-    # Liquid definitions (so the Opentrons app shows liquid placement)
+    # Liquid definitions
     # -------------------------------------------------------------------------
     standards_liquid = protocol.define_liquid(
-        name="Cygnus F1015 standards",
-        description="Reconstituted standards from the F1015 kit.",
+        name="Cygnus F143 standards (0/1/4/20/75/250 ng/mL)",
+        description=(
+            "Reconstituted F143 standard set for F1015. Std 0 (0 ng/mL) "
+            "serves as the assay blank."
+        ),
         display_color="#9b59b6",
     )
-    blank_liquid = protocol.define_liquid(
-        name="Sample diluent / blank",
-        description="Zero standard / sample diluent.",
+    diluent_liquid = protocol.define_liquid(
+        name="Sample diluent",
+        description="Used to fill unused source-plate wells.",
         display_color="#bdc3c7",
     )
     sample_liquid = protocol.define_liquid(
@@ -158,8 +228,8 @@ def run(protocol: protocol_api.ProtocolContext) -> None:
         display_color="#27ae60",
     )
     hrp_liquid = protocol.define_liquid(
-        name="Anti-HCP HRP conjugate",
-        description="Ready-to-use conjugate from the F1015 kit.",
+        name="Anti-HCP:HRP conjugate",
+        description="Ready-to-use anti-HCP HRP conjugate from the F1015 kit.",
         display_color="#e67e22",
     )
     tmb_liquid = protocol.define_liquid(
@@ -173,95 +243,90 @@ def run(protocol: protocol_api.ProtocolContext) -> None:
         display_color="#e74c3c",
     )
 
-    # Reagent volumes loaded by the user before the run.
-    # Each used column needs 8 channels * 100 uL = 800 uL per reagent dispense.
-    # [UNVERIFIED] - confirm kit aliquot.
-    used_columns = 2 if RUN_IN_DUPLICATE else 1
-    reagent_volume_per_column = 8 * 100  # uL, multi-channel full column
-    reagent_total_with_margin = used_columns * reagent_volume_per_column + 500
+    standard_draws_per_tube = used_column_count
+    sample_draws = {idx: 0 for idx in range(num_samples)}
+    diluent_draws = 0
+    for col in column_plan:
+        for row_idx in (NUM_STANDARDS, NUM_STANDARDS + 1):
+            entry = col[row_idx]
+            if entry["kind"] == "sample":
+                sample_draws[entry["index"]] += 1
+            elif entry["kind"] == "diluent":
+                diluent_draws += 1
 
-    hrp_conjugate.load_liquid(hrp_liquid, volume=reagent_total_with_margin)
-    tmb_substrate.load_liquid(tmb_liquid, volume=reagent_total_with_margin)
-    stop_solution.load_liquid(stop_liquid, volume=reagent_total_with_margin)
-
+    standard_fill_volume = standard_draws_per_tube * SOURCE_WELL_VOLUME_UL + 50
     for tube in standard_tubes:
-        tube.load_liquid(standards_liquid, volume=200)  # [UNVERIFIED] aliquot size
-    if blank_tube is not None:
-        blank_tube.load_liquid(blank_liquid, volume=200)  # [UNVERIFIED]
-    for tube in sample_tubes:
-        tube.load_liquid(sample_liquid, volume=200)  # [UNVERIFIED]
-
-    # -------------------------------------------------------------------------
-    # Plate layout
-    # -------------------------------------------------------------------------
-    # Column 1 holds blank (A) + 6 standards (B..G) + sample 1 (H).
-    # Column 2 is the duplicate of column 1 (if RUN_IN_DUPLICATE).
-    # Samples beyond #1 fill row H of subsequent column pairs (cols 3-4, 5-6, 7-8).
-    # This keeps the layout column-wise so the P300 multi can address whole columns.
-    layout_columns: list[str] = ["1"]
-    if RUN_IN_DUPLICATE:
-        layout_columns.append("2")
-    extra_sample_pairs = max(0, num_samples - 1)
-    for i in range(extra_sample_pairs):
-        layout_columns.append(str(3 + 2 * i))
-        if RUN_IN_DUPLICATE:
-            layout_columns.append(str(4 + 2 * i))
-
-    def plate_well(column: str, row_letter: str) -> protocol_api.Well:
-        return elisa_plate.wells_by_name()[f"{row_letter}{column}"]
-
-    # Build the (tube -> destination wells) map for step 1.
-    standards_and_samples: list[tuple[protocol_api.Well, list[protocol_api.Well]]] = []
-
-    base_pair = [layout_columns[0]]
-    if RUN_IN_DUPLICATE:
-        base_pair.append(layout_columns[1])
-
-    if blank_tube is not None:
-        standards_and_samples.append(
-            (blank_tube, [plate_well(col, "A") for col in base_pair])
+        tube.load_liquid(standards_liquid, volume=standard_fill_volume)
+    diluent_tube.load_liquid(
+        diluent_liquid,
+        volume=max(50, diluent_draws * SOURCE_WELL_VOLUME_UL + 50),
+    )
+    for idx, tube in enumerate(sample_tubes):
+        tube.load_liquid(
+            sample_liquid,
+            volume=sample_draws[idx] * SOURCE_WELL_VOLUME_UL + 50,
         )
 
-    for idx, std_tube in enumerate(standard_tubes):
-        row_letter = chr(ord("B") + idx)  # B, C, D, E, F, G
-        standards_and_samples.append(
-            (std_tube, [plate_well(col, row_letter) for col in base_pair])
-        )
-
-    for idx, sample_tube in enumerate(sample_tubes):
-        if idx == 0:
-            cols_for_sample = base_pair
-        else:
-            start = 2 + (idx - 1) * (2 if RUN_IN_DUPLICATE else 1)
-            cols_for_sample = layout_columns[
-                start : start + (2 if RUN_IN_DUPLICATE else 1)
-            ]
-        standards_and_samples.append(
-            (sample_tube, [plate_well(col, "H") for col in cols_for_sample])
-        )
+    reagent_volume = used_column_count * PER_WELL_VOLUME_UL + 500
+    hrp_conjugate.load_liquid(hrp_liquid, volume=reagent_volume)
+    tmb_substrate.load_liquid(tmb_liquid, volume=reagent_volume)
+    stop_solution.load_liquid(stop_liquid, volume=reagent_volume)
 
     # -------------------------------------------------------------------------
-    # Phase A - Step 1: dispense standards, blank, and samples
+    # Phase A.0 - Pre-load the source plate (single-channel, column-wise)
     # -------------------------------------------------------------------------
-    protocol.comment("=== Step 1: dispense standards, blank, and samples ===")
-    for source_tube, destinations in standards_and_samples:
+    rows = ["A", "B", "C", "D", "E", "F", "G", "H"]
+    tube_to_destinations: dict[protocol_api.Well, list[protocol_api.Well]] = {}
+
+    def add_dest(source_tube: protocol_api.Well, well_name: str) -> None:
+        tube_to_destinations.setdefault(source_tube, []).append(
+            source_plate.wells_by_name()[well_name]
+        )
+
+    for col_idx, col_plan in enumerate(column_plan):
+        col_num = col_idx + 1
+        for row_idx, entry in enumerate(col_plan):
+            well_name = f"{rows[row_idx]}{col_num}"
+            if entry["kind"] == "standard":
+                add_dest(standard_tubes[entry["index"]], well_name)
+            elif entry["kind"] == "sample":
+                add_dest(sample_tubes[entry["index"]], well_name)
+            else:
+                add_dest(diluent_tube, well_name)
+
+    protocol.comment("=== Phase A.0: pre-load source plate ===")
+    for source_tube, destinations in tube_to_destinations.items():
         p300_single.pick_up_tip()
         for dest in destinations:
-            p300_single.aspirate(SAMPLE_VOLUME_UL, source_tube.bottom(z=2))
-            p300_single.dispense(SAMPLE_VOLUME_UL, dest.bottom(z=2))
+            p300_single.aspirate(SOURCE_WELL_VOLUME_UL, source_tube.bottom(z=2))
+            p300_single.dispense(SOURCE_WELL_VOLUME_UL, dest.bottom(z=2))
             p300_single.blow_out(dest.top(z=-2))
         p300_single.drop_tip()
 
     # -------------------------------------------------------------------------
-    # Phase A - Step 2: dispense HRP conjugate to all used columns
+    # Phase A.1 - Step 1: stamp source -> assay (multichannel, by column)
     # -------------------------------------------------------------------------
-    protocol.comment("=== Step 2: dispense anti-HCP HRP conjugate ===")
+    protocol.comment("=== Step 1: stamp source plate -> assay plate ===")
+    for col_idx in range(used_column_count):
+        col_num = col_idx + 1
+        src_top = source_plate.wells_by_name()[f"A{col_num}"]
+        dst_top = assay_plate.wells_by_name()[f"A{col_num}"]
+        p300_multi.pick_up_tip()
+        p300_multi.aspirate(PER_WELL_VOLUME_UL, src_top.bottom(z=2))
+        p300_multi.dispense(PER_WELL_VOLUME_UL, dst_top.bottom(z=2))
+        p300_multi.blow_out(dst_top.top(z=-2))
+        p300_multi.drop_tip()
+
+    # -------------------------------------------------------------------------
+    # Phase A.2 - Step 2: dispense HRP conjugate (multichannel, by column)
+    # -------------------------------------------------------------------------
+    protocol.comment("=== Step 2: dispense anti-HCP:HRP conjugate ===")
     p300_multi.pick_up_tip()
-    for col in layout_columns:
-        top_well = plate_well(col, "A")
-        p300_multi.aspirate(CONJUGATE_VOLUME_UL, hrp_conjugate.bottom(z=2))
-        p300_multi.dispense(CONJUGATE_VOLUME_UL, top_well.bottom(z=2))
-        p300_multi.blow_out(top_well.top(z=-2))
+    for col_idx in range(used_column_count):
+        dst_top = assay_plate.wells_by_name()[f"A{col_idx + 1}"]
+        p300_multi.aspirate(PER_WELL_VOLUME_UL, hrp_conjugate.bottom(z=2))
+        p300_multi.dispense(PER_WELL_VOLUME_UL, dst_top.bottom(z=2))
+        p300_multi.blow_out(dst_top.top(z=-2))
     p300_multi.drop_tip()
 
     # -------------------------------------------------------------------------
@@ -269,22 +334,22 @@ def run(protocol: protocol_api.ProtocolContext) -> None:
     # -------------------------------------------------------------------------
     protocol.pause(
         "Steps 3-4 (manual):\n"
-        "  1. Seal the ELISA plate.\n"
-        "  2. Incubate per the F1015 kit manual (time + shaking per mode d'emploi).\n"
-        "  3. Wash 4x with wash buffer (~350 uL per well per wash).\n"
-        "  4. Blot the plate dry, return it to slot 1, and press Resume."
+        "  1. Seal the assay plate.\n"
+        "  2. Incubate per the F1015 kit manual (time + shaking).\n"
+        f"  3. Wash {WASH_COUNT}x with wash buffer (~{WASH_VOLUME_UL} uL/well).\n"
+        "  4. Blot the plate dry, return it to slot 1, press Resume."
     )
 
     # -------------------------------------------------------------------------
-    # Phase B - Step 5: dispense TMB substrate
+    # Phase B - Step 5: dispense TMB substrate (multichannel, by column)
     # -------------------------------------------------------------------------
     protocol.comment("=== Step 5: dispense TMB substrate ===")
     p300_multi.pick_up_tip()
-    for col in layout_columns:
-        top_well = plate_well(col, "A")
-        p300_multi.aspirate(TMB_VOLUME_UL, tmb_substrate.bottom(z=2))
-        p300_multi.dispense(TMB_VOLUME_UL, top_well.bottom(z=2))
-        p300_multi.blow_out(top_well.top(z=-2))
+    for col_idx in range(used_column_count):
+        dst_top = assay_plate.wells_by_name()[f"A{col_idx + 1}"]
+        p300_multi.aspirate(PER_WELL_VOLUME_UL, tmb_substrate.bottom(z=2))
+        p300_multi.dispense(PER_WELL_VOLUME_UL, dst_top.bottom(z=2))
+        p300_multi.blow_out(dst_top.top(z=-2))
     p300_multi.drop_tip()
 
     # -------------------------------------------------------------------------
@@ -302,15 +367,15 @@ def run(protocol: protocol_api.ProtocolContext) -> None:
         )
 
     # -------------------------------------------------------------------------
-    # Phase B - Step 7: dispense stop solution
+    # Phase B - Step 7: dispense Stop solution (multichannel, by column)
     # -------------------------------------------------------------------------
     protocol.comment("=== Step 7: dispense Stop solution ===")
     p300_multi.pick_up_tip()
-    for col in layout_columns:
-        top_well = plate_well(col, "A")
-        p300_multi.aspirate(STOP_VOLUME_UL, stop_solution.bottom(z=2))
-        p300_multi.dispense(STOP_VOLUME_UL, top_well.bottom(z=2))
-        p300_multi.blow_out(top_well.top(z=-2))
+    for col_idx in range(used_column_count):
+        dst_top = assay_plate.wells_by_name()[f"A{col_idx + 1}"]
+        p300_multi.aspirate(PER_WELL_VOLUME_UL, stop_solution.bottom(z=2))
+        p300_multi.dispense(PER_WELL_VOLUME_UL, dst_top.bottom(z=2))
+        p300_multi.blow_out(dst_top.top(z=-2))
     p300_multi.drop_tip()
 
     protocol.pause(

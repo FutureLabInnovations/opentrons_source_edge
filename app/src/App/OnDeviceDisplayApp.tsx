@@ -13,6 +13,7 @@ import {
 } from '@opentrons/components'
 import {
   ApiHostProvider,
+  useAccessControlEnabledQuery,
   useRobotSettingsQuery,
 } from '@opentrons/react-api-client'
 
@@ -23,9 +24,12 @@ import { EstopTakeover } from '/app/organisms/EmergencyStop'
 import { FirmwareUpdateTakeover } from '/app/organisms/FirmwareUpdateModal/FirmwareUpdateTakeover'
 import { IncompatibleModuleTakeover } from '/app/organisms/IncompatibleModule'
 import { ModuleWizardFlows } from '/app/organisms/ModuleWizardFlows'
+import { LoggedOutOverlayMount } from '/app/organisms/ODD/OnDeviceLogin/LoggedOutOverlayMount'
 import { QuickTransferFlow } from '/app/organisms/ODD/QuickTransferFlow'
+import { RobotEncryptionKeyTakeover } from '/app/organisms/ODD/RobotSettingsDashboard/RobotEncryptionKey/RobotEncryptionKeyTakeover'
 import { MaintenanceRunTakeover } from '/app/organisms/TakeoverModal'
 import { ToasterOven } from '/app/organisms/ToasterOven'
+import { Account } from '/app/pages/ODD/Account'
 import { ChooseLanguage } from '/app/pages/ODD/ChooseLanguage'
 import { ConnectViaEthernet } from '/app/pages/ODD/ConnectViaEthernet'
 import { ConnectViaUSB } from '/app/pages/ODD/ConnectViaUSB'
@@ -56,6 +60,7 @@ import { getLocalRobot } from '/app/redux/discovery'
 import { getIsShellReady, updateBrightness } from '/app/redux/shell'
 
 import { LocalizationProvider } from '../LocalizationProvider'
+import { getLocalRobotAccessToken } from '../redux/robot-auth'
 import { hackWindowNavigatorOnLine } from './hacks'
 import {
   useModuleAttachedToast,
@@ -76,6 +81,7 @@ import type { Dispatch } from '/app/redux/types'
 hackWindowNavigatorOnLine()
 
 export const ON_DEVICE_DISPLAY_PATHS = [
+  '/account',
   '/choose-language',
   '/dashboard',
   '/deck-configuration',
@@ -104,6 +110,8 @@ function getPathComponent(
   path: (typeof ON_DEVICE_DISPLAY_PATHS)[number]
 ): JSX.Element {
   switch (path) {
+    case '/account':
+      return <Account />
     case '/choose-language':
       return <ChooseLanguage />
     case '/dashboard':
@@ -153,6 +161,8 @@ function getPathComponent(
 
 const TURN_OFF_BACKLIGHT = '7'
 
+const RETRY_DELAY_MS = 1000
+
 export const OnDeviceDisplayApp = (): JSX.Element => {
   const dispatch = useDispatch<Dispatch>()
 
@@ -163,13 +173,15 @@ export const OnDeviceDisplayApp = (): JSX.Element => {
   // Normally, our hooks get the HostConfig from the nearest ApiHostProvider context.
   // But here at the app root, that doesn't exist. So we need to make sure we pass this
   // override into all the hooks in this component that will try to use the robot API.
+  const localRobot = useSelector(getLocalRobot)
+  const accessToken = useSelector(getLocalRobotAccessToken)
   const hostConfig = useMemo<HostConfig>(
     () => ({
-      hostname: '127.0.0.1',
+      hostname: _ODD_IP_ ?? 'localhost',
+      token: accessToken,
     }),
-    []
+    [accessToken]
   )
-  const localRobot = useSelector(getLocalRobot)
 
   const { brightness: userSetBrightness, sleepMs } = useSelector(
     getOnDeviceDisplaySettings
@@ -189,17 +201,36 @@ export const OnDeviceDisplayApp = (): JSX.Element => {
     }
   }, [dispatch, isIdle, userSetBrightness])
 
-  // ensure robot-server api, etc. is up and running
   const isShellReady = useSelector(getIsShellReady)
-  // ensure settings query data is available for localization provider
-  const { settings } =
-    useRobotSettingsQuery({ retry: true, retryDelay: 1000 }, hostConfig).data ??
-    {}
-  const isReady = isShellReady && settings != null
+
+  const robotSettingsQuery = useRobotSettingsQuery(
+    {
+      retry: true,
+      retryDelay: RETRY_DELAY_MS,
+    },
+    hostConfig
+  )
+
+  const accessControlEnabledQuery = useAccessControlEnabledQuery(
+    {
+      retry: true,
+      retryDelay: RETRY_DELAY_MS,
+    },
+    hostConfig
+  )
+
+  const isReady =
+    // ensure robot-server api, etc. is up and running
+    isShellReady &&
+    // ensure settings query data is available for localization provider
+    robotSettingsQuery.isSuccess &&
+    // ensure we know whether access control is enabled or not,
+    // so on first render we can immediately show the LoggedOutOverlay, if appropriate.
+    accessControlEnabledQuery.isSuccess
 
   // TODO (sb:6/12/23) Create a notification manager to set up preference and order of takeover modals
   return (
-    <ApiHostProvider hostname={hostConfig.hostname}>
+    <ApiHostProvider {...hostConfig}>
       <ReactQueryDevtools />
       {isReady ? (
         <LocalizationProvider>
@@ -223,19 +254,23 @@ export const OnDeviceDisplayApp = (): JSX.Element => {
                       />
                     ) : null}
                     <NiceModal.Provider>
-                      <ToasterOven>
-                        <ProtocolReceiptToasts />
-                        {!showModuleSetupModal ? (
-                          <ModuleAttachedToasts
-                            openFlow={(open: boolean) => {
-                              setShowModuleSetupModal(open)
-                            }}
-                          />
-                        ) : null}
-                        <SharedScrollRefProvider>
-                          <OnDeviceDisplayAppRoutes />
-                        </SharedScrollRefProvider>
-                      </ToasterOven>
+                      <RobotEncryptionKeyTakeover>
+                        <ToasterOven>
+                          <ProtocolReceiptToasts />
+                          {!showModuleSetupModal ? (
+                            <ModuleAttachedToasts
+                              openFlow={(open: boolean) => {
+                                setShowModuleSetupModal(open)
+                              }}
+                            />
+                          ) : null}
+
+                          <SharedScrollRefProvider>
+                            <OnDeviceDisplayAppRoutes />
+                          </SharedScrollRefProvider>
+                          <LoggedOutOverlayMount />
+                        </ToasterOven>
+                      </RobotEncryptionKeyTakeover>
                     </NiceModal.Provider>
                   </MaintenanceRunTakeover>
                 </>

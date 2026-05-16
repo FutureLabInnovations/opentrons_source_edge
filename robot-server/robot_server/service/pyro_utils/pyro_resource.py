@@ -1,15 +1,21 @@
 """Robot-server resouce class and functions for Pyro compatibility."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import threading
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
+from opentrons.config import (
+    feature_flags as ff,
+)
 from opentrons.hardware_control.types import HardwareEvent, HardwareEventHandler
 from opentrons.protocol_engine.resources.camera_provider import (
     CameraProvider,
 )
 from opentrons.protocol_engine.resources.file_provider import FileProvider
+from opentrons.protocol_engine.types import DeckConfigurationType
 from opentrons.util.pyro.pyro_daemon_utility import create_pyro_daemon
 from opentrons.util.pyro.pyro_synchronous_adapter import (
     convert_result_to_proxy,
@@ -20,17 +26,18 @@ from server_utils.fastapi_utils.app_state import (
     AppStateAccessor,
 )
 
-from robot_server.maintenance_runs.maintenance_run_orchestrator_store import (
-    MaintenanceRunOrchestratorStore,
-    handle_estop_event,
-)
-from robot_server.runs.run_orchestrator_store import (
-    RunOrchestratorStore,
-    handle_hardware_event,
-)
 from robot_server.service.pyro_utils.serpent_type_registry import (
     register_robot_server_types,
 )
+
+if TYPE_CHECKING:
+    from robot_server.deck_configuration.store import DeckConfigurationStore
+    from robot_server.maintenance_runs.maintenance_run_orchestrator_store import (
+        MaintenanceRunOrchestratorStore,
+    )
+    from robot_server.runs.run_orchestrator_store import (
+        RunOrchestratorStore,
+    )
 
 robot_server_pyro_resource_accessor = AppStateAccessor["RobotServerPyroResource"](
     "robot_server_pyro_resource"
@@ -51,32 +58,44 @@ class RobotServerPyroResource:
     """
 
     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        # Specialty private member for daemon execution overloading - Relevant to PyroSynchronousObjects only
+        self._execute_on_pyro_daemon_overload = True
+
         self._loop = loop
 
         # Default the resource variables to None - these will be set as services spin up
-        self._run_orchestrator_store: Optional[RunOrchestratorStore] = None
+        self._run_orchestrator_store: Optional["RunOrchestratorStore"] = None
         self._maintenance_run_orchestrator_store: Optional[
-            MaintenanceRunOrchestratorStore
+            "MaintenanceRunOrchestratorStore"
         ] = None
+        self._deck_configuration_store: Optional["DeckConfigurationStore"] = None
         self._camera_provider: Optional[CameraProvider] = None
         self._file_provider: Optional[FileProvider] = None
+        self._notify_publishers: Optional[Callable[[], None]] = None
 
     ### Setters for procedural state gathering - Not to be used from remote process ###
     def set_run_orchestrator_store(
-        self, run_orchestrator_store: RunOrchestratorStore
+        self, run_orchestrator_store: "RunOrchestratorStore"
     ) -> None:
         """Set the RunOrchestratorStore of the RobotServerPyroResource, not serialized for remote processes."""
         if self._run_orchestrator_store is None:
             self._run_orchestrator_store = run_orchestrator_store
 
     def set_maintenance_run_orchestorator_store(
-        self, maintenance_run_orchestrator_store: MaintenanceRunOrchestratorStore
+        self, maintenance_run_orchestrator_store: "MaintenanceRunOrchestratorStore"
     ) -> None:
         """Set the MaintenanceRunOrchestratorStore of the RobotServerPyroResource, not serialized for remote processes."""
         if self._maintenance_run_orchestrator_store is None:
             self._maintenance_run_orchestrator_store = (
                 maintenance_run_orchestrator_store
             )
+
+    def set_deck_configuration_store(
+        self, deck_configuration_store: "DeckConfigurationStore"
+    ) -> None:
+        """Set the DeckConfigurationStore of the RobotServerPyroResource, not serialized for remote processes."""
+        if self._deck_configuration_store is None:
+            self._deck_configuration_store = deck_configuration_store
 
     def set_camera_provider(self, camera_provider: CameraProvider) -> None:
         """Set the CameraProvider of the RobotServerPyroResource, not serialized for remote processes."""
@@ -87,6 +106,13 @@ class RobotServerPyroResource:
         """Set the FileProvider of the RobotServerPyroResource, not serialized for remote processes."""
         if self._file_provider is None:
             self._file_provider = file_provider
+
+    def set_notify_publishers(self, notify_publishers: Callable[[], None]) -> None:
+        """Set the Notificaiton Publishers of the RobotServerPyroResource, not serialized for remote processes."""
+        # todo(chb, 2026-04-24): This is allowed to be overwritten since it will only be set once per run, it has yet to be determined if
+        # they need refreshing. Will this cause problems with multi-run situations, like maintenance runs on top of existing runs?
+        # Do we need an entirely seperate notification publisher for maintenance runs?
+        self._notify_publishers = notify_publishers
 
     ### Interface methods for remote access ###
 
@@ -103,7 +129,7 @@ class RobotServerPyroResource:
                 event: HardwareEvent,
             ) -> None:
                 asyncio.run_coroutine_threadsafe(
-                    handle_hardware_event(orchestrator_store, event),
+                    orchestrator_store.handle_proxy_hardware_event(event),
                     self._loop,
                 )
 
@@ -126,7 +152,7 @@ class RobotServerPyroResource:
                 event: HardwareEvent,
             ) -> None:
                 asyncio.run_coroutine_threadsafe(
-                    handle_estop_event(orchestrator_store, event),
+                    orchestrator_store.handle_proxy_estop_event(event),
                     self._loop,
                 )
 
@@ -135,6 +161,16 @@ class RobotServerPyroResource:
         else:
             raise RuntimeError(
                 "Cannot provider a estop listener from the RobotServerPyroResource without a MaintenanceRunOrchestratorStore."
+            )
+
+    async def get_deck_configuration(self) -> DeckConfigurationType:
+        """Provide the current recognized DeckConfiguration of the robot server."""
+
+        if self._deck_configuration_store is not None:
+            return await self._deck_configuration_store.get_deck_configuration()
+        else:
+            raise RuntimeError(
+                "Cannot return a DeckConfigurationType from the RobotServerPyroResource without initializing."
             )
 
     @pyro_behavior(specialty_func=convert_result_to_proxy, apply_local=False)
@@ -165,6 +201,17 @@ class RobotServerPyroResource:
                 "Cannot return a FileProvider from the RobotServerPyroResource without initializing."
             )
 
+    @pyro_behavior(specialty_func=convert_result_to_proxy, apply_local=False)
+    def get_notify_publishers(self) -> Callable[[], None] | None:
+        """Provide a Pyro Proxy for the Notification Publishers callback.
+
+        The returned instance is meant to execute in the Robot Server's process. Of note
+        Notification publishers are only registered with the Pyro Resource for runs created by
+        the Robot Server.
+        """
+
+        return self._notify_publishers
+
 
 ### Utility methods for initializing and registering state within the RobotServerPyroResource
 
@@ -185,14 +232,16 @@ def start_initializing_pyro_resource(app_state: AppState) -> None:
     resource = RobotServerPyroResource(loop=asyncio.get_event_loop())
     robot_server_pyro_resource_accessor.set_on(app_state, resource)
 
-    pyro_daemon_thread = threading.Thread(
-        target=_start_and_run_pyro_daemon,
-        name="RobotServerResourceThread",
-        args=(),
-        kwargs={
-            "pyroname": RS_PYRONAME,
-            "registry": register_robot_server_types,
-        },
-        daemon=True,
-    )
-    pyro_daemon_thread.start()
+    # Only spin up a request handling daemon if subprocess mode is enabled
+    if ff.hardware_subprocess_enabled():
+        pyro_daemon_thread = threading.Thread(
+            target=_start_and_run_pyro_daemon,
+            name="RobotServerResourceThread",
+            args=(),
+            kwargs={
+                "pyroname": RS_PYRONAME,
+                "registry": register_robot_server_types,
+            },
+            daemon=True,
+        )
+        pyro_daemon_thread.start()

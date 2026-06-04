@@ -453,8 +453,12 @@ def run(protocol: protocol_api.ProtocolContext):
         for i in range(8, 96):  # wells 8..95 in column-major order = cols 2..12
             dst_well   = plate.wells()[i]
             src_well, src_z = aspirate_diluent(DILUENT_UL)
-            p300s.aspirate(DILUENT_UL, src_well.bottom(src_z))
-            p300s.dispense(DILUENT_UL, dst_well.top(z=-5))
+            p300s.aspirate((DILUENT_UL) - 0.01, src_well.bottom(src_z))
+            protocol.delay(seconds=0.5)
+            p300s.aspirate(0.01, src_well.bottom(src_z))
+            p300s.dispense((DILUENT_UL) - 0.01, dst_well.top(z=-5))
+            protocol.delay(seconds=0.5)
+            p300s.dispense(0.01, dst_well.top(z=-5))
             lift_z = well_trackers[dst_well].add(DILUENT_UL)
             p300s.move_to(dst_well.bottom(z=lift_z))
 
@@ -463,8 +467,12 @@ def run(protocol: protocol_api.ProtocolContext):
         for i in range(8):
             dst_well = plate.wells()[i]
             src_z    = colour_tracker.aspirate_height(STOCK_UL)
-            p300s.aspirate(STOCK_UL, colour_tracker.well.bottom(src_z))
-            p300s.dispense(STOCK_UL, dst_well.top(z=-5))
+            p300s.aspirate((STOCK_UL) - 0.01, colour_tracker.well.bottom(src_z))
+            protocol.delay(seconds=0.5)
+            p300s.aspirate(0.01, colour_tracker.well.bottom(src_z))
+            p300s.dispense((STOCK_UL) - 0.01, dst_well.top(z=-5))
+            protocol.delay(seconds=0.5)
+            p300s.dispense(0.01, dst_well.top(z=-5))
             lift_z   = well_trackers[dst_well].add(STOCK_UL)
             p300s.move_to(dst_well.bottom(z=lift_z))
 
@@ -484,8 +492,12 @@ def run(protocol: protocol_api.ProtocolContext):
             src_well = plate.wells()[temp_well]
             temp_well += 8
             dst_well = plate.wells()[temp_well]
-            p300m.aspirate(XFER_UL, src_well.bottom(z=2))
-            p300m.dispense(XFER_UL, dst_well.top(z=-5))
+            p300m.aspirate((XFER_UL) - 0.01, src_well.bottom(z=2))
+            protocol.delay(seconds=0.5)
+            p300m.aspirate(0.01, src_well.bottom(z=2))
+            p300m.dispense((XFER_UL) - 0.01, dst_well.top(z=-5))
+            protocol.delay(seconds=0.5)
+            p300m.dispense(0.01, dst_well.top(z=-5))
             p300m.mix(MIX_REPS, MIX_UL, dst_well.bottom(z=2))
             # Update trackers for all 8 destination wells in this column.
             # The lift-off height uses the A-row well as the reference;

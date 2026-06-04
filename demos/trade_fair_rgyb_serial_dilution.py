@@ -101,6 +101,7 @@ RUN ORDER  (top of run() prints this same plan to the app's run log)
 """
 
 import math
+import time
 
 from opentrons import protocol_api
 
@@ -560,6 +561,8 @@ def run(protocol: protocol_api.ProtocolContext):
     protocol.home()
     protocol.set_rail_lights(True)
 
+    _run_started_at = time.time()
+    _plate_times = []   # (colour, seconds)
     plates_run = 0
     pending = [
         (RUN_PLATE_1_RED,    target_plate_1, "red",    0, 1),
@@ -575,14 +578,26 @@ def run(protocol: protocol_api.ProtocolContext):
                 f"  ... between-plate pause: {BETWEEN_PLATE_DELAY_S} s ..."
             )
             protocol.delay(seconds=BETWEEN_PLATE_DELAY_S)
+        _plate_started_at = time.time()
         run_one_plate(plate, colour,
                       single_tip_index=sng_tip, multi_tip_col_index=mlt_col)
+        _plate_times.append((colour, time.time() - _plate_started_at))
         plates_run += 1
     protocol.comment(f"\n=== Plates completed: {plates_run}/3 ===")
 
     # -----------------------------------------------------------------------
     # End-of-run usage report
     # -----------------------------------------------------------------------
+    _run_seconds = time.time() - _run_started_at
+    protocol.comment(
+        f"\n=== Timing summary: {plates_run} plate(s) in "
+        f"{_run_seconds/60:.1f} min ({_run_seconds:.0f} s) ==="
+    )
+    for _colour, _secs in _plate_times:
+        protocol.comment(
+            f"  {_colour:>6}: {_secs/60:5.2f} min ({_secs:5.0f} s)"
+        )
+
     protocol.comment("\n=== End-of-run reservoir usage (uL remaining per lane) ===")
     for name in ("red", "yellow", "blue"):
         t = colour_trackers[name]

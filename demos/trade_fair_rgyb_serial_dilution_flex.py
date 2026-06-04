@@ -484,8 +484,9 @@ def run(protocol: protocol_api.ProtocolContext):
         f"  A3 Blue dye  : pour ~{stock_pour_ul / 1000:.2f} mL"
     )
     protocol.comment(
-        f"  {DILUENT_LANE_NAMES} Diluent: pour ~{diluent_per_lane / 1000:.2f} mL "
-        f"each ({n_diluent_lanes} lane(s); need "
+        f"  {', '.join(DILUENT_LANE_NAMES)} Diluent: pour "
+        f"~{diluent_per_lane / 1000:.2f} mL each "
+        f"({n_diluent_lanes} lane(s); need "
         f"{diluent_total_need_ul / 1000:.2f} mL total + buffer)"
     )
     protocol.comment(

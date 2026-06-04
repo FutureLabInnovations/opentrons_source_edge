@@ -737,9 +737,7 @@ def run(protocol: protocol_api.ProtocolContext):
         multi_prefill_diluent(plate, 1, N_COLS, DILUENT_UL)
 
         # 2) Single-channel: four stocks into column 1 (row pairs).
-        col1 = {"A": plate["A1"], "B": plate["B1"], "C": plate["C1"],
-                "D": plate["D1"], "E": plate["E1"], "F": plate["F1"],
-                "G": plate["G1"], "H": plate["H1"]}
+        col1 = {row: plate[f"{row}1"] for row in "ABCDEFGH"}
 
         # Pure-colour stocks: red A/B, yellow C/D, blue E/F.
         for tip_color, lane, wells in [

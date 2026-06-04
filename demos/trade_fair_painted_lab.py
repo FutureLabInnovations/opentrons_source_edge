@@ -1152,7 +1152,7 @@ def run(protocol: protocol_api.ProtocolContext):
         protocol.comment(
             f"  {reagent:>6}: est. draw {info['estimated_draw_ul'] / 1000:.2f} mL "
             f"-> total pour {info['with_buffer_ul'] / 1000:.2f} mL across "
-            f"{info['lanes']} | {per_lane}"
+            f"{', '.join(info['lanes'])} | {per_lane}"
         )
     protocol.comment(
         f"  wash:   pour ~{WORKING_LANE_CAPACITY_UL / 1000:.0f} mL into "

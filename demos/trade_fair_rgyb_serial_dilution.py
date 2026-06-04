@@ -647,6 +647,11 @@ def run(protocol: protocol_api.ProtocolContext):
             f"  {_colour:>6}: {_secs/60:5.2f} min ({_secs:5.0f} s)"
         )
 
+    protocol.comment(
+        f"\n=== Tips used: {plates_run} single + {plates_run} 8-channel column "
+        f"(returned to rack; none discarded) ==="
+    )
+
     protocol.comment("\n=== End-of-run reservoir usage (uL remaining per lane) ===")
     for name in ("red", "yellow", "blue"):
         t = colour_trackers[name]

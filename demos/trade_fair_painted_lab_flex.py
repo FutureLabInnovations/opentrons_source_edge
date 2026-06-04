@@ -778,6 +778,7 @@ def run(protocol: protocol_api.ProtocolContext):
         protocol.comment(
             f"=== Plate {plate_idx + 1} | STANDARD CURVES (4 colours) ==="
         )
+        protocol.comment('  Pre-fill diluent (cols 2-12), four colour stocks in col 1 (R, Y, B, purple=R+B), then 1:2 serial dilution col 1 -> col 11. Col 12 stays as the no-dilution blank.')
 
         # 1) Multi-channel: water in cols 2..12.
         multi_prefill_diluent(plate, 1, N_COLS, DILUENT_UL)
@@ -829,6 +830,7 @@ def run(protocol: protocol_api.ProtocolContext):
         protocol.comment(
             f"=== Plate {plate_idx + 1} | SYNERGY MATRIX (2D dose-response) ==="
         )
+        protocol.comment('  Water base in every well, red gradient titrated across the cols (peak at col 1), blue gradient titrated down the rows (peak at row H), yellow viability indicator in the central B-G x cols 2-11 experimental zone.')
 
         # 1) Multi-channel: assay-buffer base in every column.
         multi_pick_fresh()
@@ -882,6 +884,7 @@ def run(protocol: protocol_api.ProtocolContext):
         protocol.comment(
             f"=== Plate {plate_idx + 1} | MULTIPLEX PLATE MAP (4 blocks) ==="
         )
+        protocol.comment('  Four solid-colour column blocks: cols 1-3 red, 4-6 yellow, 7-9 blue, 10-12 yellow + blue overlay = green. Multi-channel fills each block in one column pass.')
 
         blocks = [
             ("red",     "red",    range(0, 3),  None),
@@ -923,6 +926,7 @@ def run(protocol: protocol_api.ProtocolContext):
         protocol.comment(
             f"=== Plate {plate_idx + 1} | ELISA LAYOUT (standard+samples+ctrls) ==="
         )
+        protocol.comment("  Cols 1-2 are duplicate vertical standard-curve series in red (1:2 dilution down the rows from a stock at row A). Cols 3-10 are 'patient samples' with red dye spotted at varying volumes. Col 11 is the positive control (yellow); col 12 is the no-template blank (water only).")
 
         # 1) Single-channel vertical standard curves in cols 1 & 2.
         #    Diluent in rows B-H of cols 1-2 first, then stock in A1/A2,
@@ -1005,6 +1009,7 @@ def run(protocol: protocol_api.ProtocolContext):
             f"=== Plate {plate_idx + 1} | MIXED-COLOUR BOUQUET "
             f"(orange/green/purple/brown) ==="
         )
+        protocol.comment('  Diluent in cols 2-12, four mixed-colour secondaries pre-mixed in col 1 (A/B = orange R+Y, C/D = green Y+B, E/F = purple R+B, G/H = brown R+Y+B), then 1:2 serial dilution col 1 -> col 11.')
 
         # 1) Diluent in cols 2..12.
         multi_prefill_diluent(plate, 1, N_COLS, DILUENT_UL)
@@ -1089,6 +1094,7 @@ def run(protocol: protocol_api.ProtocolContext):
         protocol.comment(
             f"=== Plate {plate_idx + 1} | CONCENTRIC RAINBOW RINGS (finale) ==="
         )
+        protocol.comment("  Single-channel finale: four nested rings painted outer -> inner: ring 1 red (36 wells), ring 2 yellow (28), ring 3 green = yellow + blue overlay (20), ring 4 blue (12). Slow but mesmerising; this is the 'wow' plate.")
 
         # Build the four nested ring sets.
         rows_alpha = "ABCDEFGH"

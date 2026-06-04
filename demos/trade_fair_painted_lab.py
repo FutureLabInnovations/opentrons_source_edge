@@ -886,7 +886,8 @@ def run(protocol: protocol_api.ProtocolContext):
                 w = plate.wells_by_name()[f"{row}{col_letter}"]
                 aspirate_from_sources(p300s, std_dil_ul, "water")
                 dispense_and_lift(p300s, std_dil_ul, w)
-        single_finish()
+        # Water-only tip - skip the wash before returning to save time.
+        single_finish(wash=False)
 
         pick_single_tip("red")
         for col_letter in ("1", "2"):

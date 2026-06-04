@@ -418,10 +418,13 @@ def run(protocol: protocol_api.ProtocolContext):
         if pour_total / n_diluent_lanes <= LANE_USABLE_UL:
             break
         n_diluent_lanes += 1
-        if n_diluent_lanes > 10:
+        # 8 diluent lanes is the practical max: A1-A3 stocks +
+        # A4-A11 diluent + A12 wash fills the 12-lane reservoir.
+        if n_diluent_lanes > 8:
             raise RuntimeError(
-                "Could not fit diluent budget within 10 lanes - bump "
-                "LANE_USABLE_UL or check the cross-section calculation."
+                "Could not fit diluent budget within 8 lanes "
+                "(A1-A3 hold stock, A12 holds wash). Bump LANE_USABLE_UL, "
+                "drop the diluent estimate, or use a wider reservoir."
             )
     diluent_pour_ul  = pour_total
     diluent_per_lane = diluent_pour_ul / n_diluent_lanes

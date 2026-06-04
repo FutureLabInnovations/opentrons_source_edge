@@ -50,9 +50,12 @@ Tip strategy (real-lab practice):
       cols 4-6  -> yellow tips
       cols 7-9  -> blue tips
       cols 10-12-> wash/water tips
-  Multi-channel uses fresh tip columns for the first WASH_TRIGGER_PLATE
-  plates, then switches to wash-and-reuse mode (mix(4, 250) in the
-  bulk reservoir between colours, returned to the rack for re-use).
+  Tips are NEVER dropped to the trash. After every use the pipette
+  mixes 4 x 250 uL in the wash lane (mix(4, 250) + blow_out) and the
+  tip is returned to its rack position with pipette.return_tip(). The
+  wash water in the dedicated wash lane absorbs trace dye over the
+  run; nothing is ever drawn from that lane so contamination stays
+  contained there.
 
 Liquids are registered with protocol.define_liquid() and assigned to
 their starting wells with well.load_liquid(), so the Opentrons app
@@ -209,8 +212,6 @@ TIP_SECTIONS = {
     "wash":   (10, 12),
 }
 
-# After this plate index (0-based), multi-channel switches to wash-and-reuse.
-WASH_TRIGGER_PLATE = 2
 
 # P300 lower limit; any computed volume below this is skipped.
 MIN_DISPENSE_UL = 20
@@ -544,27 +545,41 @@ def run(protocol: protocol_api.ProtocolContext):
         multi_idx["next"] += 1
         flex_m.pick_up_tip(target)
 
+    def _wash_well():
+        return reservoir[plan["_wash"]["lane"]]
+
     def multi_wash():
         # mix(4, 250) is the proven internal-protocol wash pattern. Wash
         # water lives in the dedicated wash lane (plan["_wash"]["lane"]) -
         # it slowly picks up trace dye over the run, but nothing is ever
         # drawn from it, so contamination stays inside that one lane.
-        wash_well = reservoir[plan["_wash"]["lane"]]
+        wash_well = _wash_well()
         flex_m.mix(4, 250, wash_well.bottom(2))
         flex_m.blow_out(wash_well.top(-3))
 
-    def finish_multi(wash_mode: bool):
-        if wash_mode:
-            multi_wash()
-            flex_m.return_tip()
-        else:
-            flex_m.drop_tip()
+    def single_wash():
+        # Same idea as multi_wash, scaled to the single-channel pipette.
+        wash_well = _wash_well()
+        flex_s.mix(4, 250, wash_well.bottom(2))
+        flex_s.blow_out(wash_well.top(-3))
+
+    def finish_multi():
+        # Always wash + return - booth-wide rule: tips are NEVER trashed.
+        multi_wash()
+        flex_m.return_tip()
+
+    def single_finish(wash: bool = True):
+        # Always return; wash if the tip touched concentrated reagent
+        # (pass wash=False for tips that only ever saw plain water).
+        if wash:
+            single_wash()
+        flex_s.return_tip()
 
     # =====================================================================
     # Common building blocks
     # =====================================================================
     def multi_prefill_diluent(plate, first_col: int, last_col_exclusive: int,
-                              vol_per_col: int, wash_mode: bool):
+                              vol_per_col: int):
         """Multi-channel: pre-load `vol_per_col` of water into each
         column in [first_col, last_col_exclusive). All 8 rows of each
         column fill in one shot."""
@@ -572,7 +587,7 @@ def run(protocol: protocol_api.ProtocolContext):
         for col in range(first_col, last_col_exclusive):
             aspirate_from_sources(flex_m, vol_per_col, "water", channels=8)
             dispense_and_lift(flex_m, vol_per_col, plate.columns()[col][0])
-        finish_multi(wash_mode)
+        finish_multi()
 
     def multi_serial_dilute(plate, first_col: int, last_col_exclusive: int):
         """Multi-channel 1:2 serial dilution across [first_col,
@@ -586,7 +601,7 @@ def run(protocol: protocol_api.ProtocolContext):
             trailed_dispense(flex_m, XFER_UL, dst)
             flex_m.mix(MIX_REPS, MIX_UL, dst)
             flex_m.blow_out(plate.columns()[col + 1][0].top(z=-2))
-        flex_m.drop_tip()
+        finish_multi()
 
     def single_dispense_color(color: str, lane: str, wells, vol_ul: int,
                               mix_after: bool = False):
@@ -603,7 +618,7 @@ def run(protocol: protocol_api.ProtocolContext):
                 flex_s.move_to(target.top(z=-2))
             else:
                 dispense_and_lift(flex_s, vol_ul, target)
-        flex_s.drop_tip()
+        single_finish()
 
     # tiny inline helper for the workflows below
     def plate_lookup(_):  # pragma: no cover - placeholder, never called
@@ -615,13 +630,12 @@ def run(protocol: protocol_api.ProtocolContext):
     # Real lab analog: parallel standard-curve preparation, four samples
     # done in technical-duplicate row pairs (A/B, C/D, E/F, G/H).
     def plate_standard_curves(plate, plate_idx: int):
-        wash_mode = plate_idx >= WASH_TRIGGER_PLATE
         protocol.comment(
             f"=== Plate {plate_idx + 1} | STANDARD CURVES (4 colours) ==="
         )
 
         # 1) Multi-channel: water in cols 2..12.
-        multi_prefill_diluent(plate, 1, N_COLS, DILUENT_UL, wash_mode)
+        multi_prefill_diluent(plate, 1, N_COLS, DILUENT_UL)
 
         # 2) Single-channel: four stocks into column 1 (row pairs).
         col1 = {"A": plate["A1"], "B": plate["B1"], "C": plate["C1"],
@@ -638,21 +652,21 @@ def run(protocol: protocol_api.ProtocolContext):
             for w in wells:
                 aspirate_from_sources(flex_s, STOCK_UL, lane)
                 dispense_and_lift(flex_s, STOCK_UL, w)
-            flex_s.drop_tip()
+            single_finish()
 
         # Purple (R + B) into G/H: red half first, then blue half + mix.
         pick_single_tip("red")
         for w in (col1["G"], col1["H"]):
             aspirate_from_sources(flex_s, HALF_STOCK_UL, "red")
             trailed_dispense(flex_s, HALF_STOCK_UL, w.bottom(2))
-        flex_s.drop_tip()
+        single_finish()
         pick_single_tip("blue")
         for w in (col1["G"], col1["H"]):
             aspirate_from_sources(flex_s, HALF_STOCK_UL, "blue")
             trailed_dispense(flex_s, HALF_STOCK_UL, w.bottom(2))
             flex_s.mix(2, MIX_UL, w.bottom(2))
             flex_s.move_to(w.top(z=-2))
-        flex_s.drop_tip()
+        single_finish()
 
         # 3) Multi-channel: 1:2 serial dilution cols 1..11 (col 12 blank).
         multi_serial_dilute(plate, 0, N_COLS - 1)
@@ -664,7 +678,6 @@ def run(protocol: protocol_api.ProtocolContext):
     # (red) titrated across columns; compound B (blue) titrated down rows;
     # yellow viability indicator added in the experimental zone.
     def plate_synergy_matrix(plate, plate_idx: int):
-        wash_mode = plate_idx >= WASH_TRIGGER_PLATE
         base_ul   = 30   # assay-buffer base
         max_red   = 60   # peak at col 0
         max_blue  = 50   # peak at row H
@@ -679,7 +692,7 @@ def run(protocol: protocol_api.ProtocolContext):
         for col in range(N_COLS):
             aspirate_from_sources(flex_m, base_ul, "water", channels=8)
             dispense_and_lift(flex_m, base_ul, plate.columns()[col][0])
-        finish_multi(wash_mode)
+        finish_multi()
 
         # 2) Multi-channel: red gradient across columns.
         multi_pick_fresh()
@@ -689,7 +702,7 @@ def run(protocol: protocol_api.ProtocolContext):
                 continue
             aspirate_from_sources(flex_m, v, "red", channels=8)
             dispense_and_lift(flex_m, v, plate.columns()[col][0])
-        finish_multi(wash_mode)
+        finish_multi()
 
         # 3) Single-channel: blue gradient down rows.
         pick_single_tip("blue")
@@ -701,7 +714,7 @@ def run(protocol: protocol_api.ProtocolContext):
                 w = plate.wells_by_name()[f"{row_letter}{col + 1}"]
                 aspirate_from_sources(flex_s, v, "blue")
                 dispense_and_lift(flex_s, v, w)
-        flex_s.drop_tip()
+        single_finish()
 
         # 4) Single-channel: yellow indicator in the central experimental
         #    zone (skip A/H rows and 1/12 columns, the classic "edge-
@@ -712,7 +725,7 @@ def run(protocol: protocol_api.ProtocolContext):
                 w = plate.wells_by_name()[f"{r}{c + 1}"]
                 aspirate_from_sources(flex_s, indicator, "yellow")
                 dispense_and_lift(flex_s, indicator, w)
-        flex_s.drop_tip()
+        single_finish()
 
     # =====================================================================
     # WORKFLOW 3: Multiplex Plate Map (four solid-colour column blocks)
@@ -721,7 +734,6 @@ def run(protocol: protocol_api.ProtocolContext):
     # a compound-library plate map. Each three-column block represents a
     # different reagent / compound family.
     def plate_multiplex_blocks(plate, plate_idx: int):
-        wash_mode = plate_idx >= WASH_TRIGGER_PLATE
         block_ul  = 80    # primary reagent volume in each well
 
         protocol.comment(
@@ -740,14 +752,14 @@ def run(protocol: protocol_api.ProtocolContext):
             for col in cols:
                 aspirate_from_sources(flex_m, block_ul, lane, channels=8)
                 dispense_and_lift(flex_m, block_ul, plate.columns()[col][0])
-            finish_multi(wash_mode)
+            finish_multi()
             if overlay == "blue_overlay":
                 # Y + B = green
                 multi_pick_fresh()
                 for col in cols:
                     aspirate_from_sources(flex_m, block_ul, "blue", channels=8)
                     dispense_and_lift(flex_m, block_ul, plate.columns()[col][0])
-                finish_multi(wash_mode)
+                finish_multi()
 
     # =====================================================================
     # WORKFLOW 4: ELISA Plate Layout
@@ -758,7 +770,6 @@ def run(protocol: protocol_api.ProtocolContext):
     # intensity. Col 11 is the positive control (high yellow). Col 12
     # is the no-template / blank control.
     def plate_elisa_layout(plate, plate_idx: int):
-        wash_mode = plate_idx >= WASH_TRIGGER_PLATE
         std_col_stock_ul   = 100   # red stock in row A of cols 1 & 2
         std_dil_ul         = 50
         std_xfer_ul        = 50
@@ -779,7 +790,7 @@ def run(protocol: protocol_api.ProtocolContext):
                 w = plate.wells_by_name()[f"{row}{col_letter}"]
                 aspirate_from_sources(flex_s, std_dil_ul, "water")
                 dispense_and_lift(flex_s, std_dil_ul, w)
-        flex_s.drop_tip()
+        single_finish()
 
         pick_single_tip("red")
         for col_letter in ("1", "2"):
@@ -795,14 +806,14 @@ def run(protocol: protocol_api.ProtocolContext):
                 trailed_dispense(flex_s, std_xfer_ul, dst.bottom(2))
                 flex_s.mix(2, std_xfer_ul, dst.bottom(2))
                 flex_s.move_to(dst.top(z=-2))
-        flex_s.drop_tip()
+        single_finish()
 
         # 2) Multi-channel diluent base in cols 3-10 (the sample region).
         multi_pick_fresh()
         for col in range(2, 10):
             aspirate_from_sources(flex_m, sample_base_ul, "water", channels=8)
             dispense_and_lift(flex_m, sample_base_ul, plate.columns()[col][0])
-        finish_multi(wash_mode)
+        finish_multi()
 
         # 3) Single-channel "sample" pattern: red dye spotted at varying
         #    volumes that look like real biological variability (a few
@@ -824,19 +835,19 @@ def run(protocol: protocol_api.ProtocolContext):
             w = plate.wells_by_name()[w_name]
             aspirate_from_sources(flex_s, vol, "red")
             dispense_and_lift(flex_s, vol, w)
-        flex_s.drop_tip()
+        single_finish()
 
         # 4) Multi-channel: positive control (yellow) in col 11.
         multi_pick_fresh()
         aspirate_from_sources(flex_m, pos_ctrl_ul, "yellow", channels=8)
         dispense_and_lift(flex_m, pos_ctrl_ul, plate.columns()[10][0])
-        finish_multi(wash_mode)
+        finish_multi()
 
         # 5) Multi-channel: NTC blank (water) in col 12.
         multi_pick_fresh()
         aspirate_from_sources(flex_m, blank_ul, "water", channels=8)
         dispense_and_lift(flex_m, blank_ul, plate.columns()[11][0])
-        finish_multi(wash_mode)
+        finish_multi()
 
     # =====================================================================
     # WORKFLOW 5: Mixed-Colour Bouquet (four mixed-colour row-pair curves)
@@ -846,14 +857,13 @@ def run(protocol: protocol_api.ProtocolContext):
     # different secondary colour formed by mixing two or three primaries
     # in column 1, then 1:2 serial-diluted out to column 12.
     def plate_mixed_bouquet(plate, plate_idx: int):
-        wash_mode = plate_idx >= WASH_TRIGGER_PLATE
         protocol.comment(
             f"=== Plate {plate_idx + 1} | MIXED-COLOUR BOUQUET "
             f"(orange/green/purple/brown) ==="
         )
 
         # 1) Diluent in cols 2..12.
-        multi_prefill_diluent(plate, 1, N_COLS, DILUENT_UL, wash_mode)
+        multi_prefill_diluent(plate, 1, N_COLS, DILUENT_UL)
 
         # 2) Mix four secondary colours into column 1 (row pairs).
         ab = (plate["A1"], plate["B1"])
@@ -866,61 +876,61 @@ def run(protocol: protocol_api.ProtocolContext):
         for w in ab:
             aspirate_from_sources(flex_s, HALF_STOCK_UL, "red")
             trailed_dispense(flex_s, HALF_STOCK_UL, w.bottom(2))
-        flex_s.drop_tip()
+        single_finish()
         pick_single_tip("yellow")
         for w in ab:
             aspirate_from_sources(flex_s, HALF_STOCK_UL, "yellow")
             trailed_dispense(flex_s, HALF_STOCK_UL, w.bottom(2))
             flex_s.mix(2, MIX_UL, w.bottom(2))
             flex_s.move_to(w.top(z=-2))
-        flex_s.drop_tip()
+        single_finish()
 
         # Green (C,D) = yellow + blue
         pick_single_tip("yellow")
         for w in cd:
             aspirate_from_sources(flex_s, HALF_STOCK_UL, "yellow")
             trailed_dispense(flex_s, HALF_STOCK_UL, w.bottom(2))
-        flex_s.drop_tip()
+        single_finish()
         pick_single_tip("blue")
         for w in cd:
             aspirate_from_sources(flex_s, HALF_STOCK_UL, "blue")
             trailed_dispense(flex_s, HALF_STOCK_UL, w.bottom(2))
             flex_s.mix(2, MIX_UL, w.bottom(2))
             flex_s.move_to(w.top(z=-2))
-        flex_s.drop_tip()
+        single_finish()
 
         # Purple (E,F) = red + blue
         pick_single_tip("red")
         for w in ef:
             aspirate_from_sources(flex_s, HALF_STOCK_UL, "red")
             trailed_dispense(flex_s, HALF_STOCK_UL, w.bottom(2))
-        flex_s.drop_tip()
+        single_finish()
         pick_single_tip("blue")
         for w in ef:
             aspirate_from_sources(flex_s, HALF_STOCK_UL, "blue")
             trailed_dispense(flex_s, HALF_STOCK_UL, w.bottom(2))
             flex_s.mix(2, MIX_UL, w.bottom(2))
             flex_s.move_to(w.top(z=-2))
-        flex_s.drop_tip()
+        single_finish()
 
         # Brown (G,H) = red + yellow + blue (50 uL each = 150 uL stock)
         pick_single_tip("red")
         for w in gh:
             aspirate_from_sources(flex_s, THIRD_STOCK_UL, "red")
             trailed_dispense(flex_s, THIRD_STOCK_UL, w.bottom(2))
-        flex_s.drop_tip()
+        single_finish()
         pick_single_tip("yellow")
         for w in gh:
             aspirate_from_sources(flex_s, THIRD_STOCK_UL, "yellow")
             trailed_dispense(flex_s, THIRD_STOCK_UL, w.bottom(2))
-        flex_s.drop_tip()
+        single_finish()
         pick_single_tip("blue")
         for w in gh:
             aspirate_from_sources(flex_s, THIRD_STOCK_UL, "blue")
             trailed_dispense(flex_s, THIRD_STOCK_UL, w.bottom(2))
             flex_s.mix(2, MIX_UL, w.bottom(2))
             flex_s.move_to(w.top(z=-2))
-        flex_s.drop_tip()
+        single_finish()
 
         # 3) Multi-channel: serial dilution cols 1..11 (col 12 blank).
         multi_serial_dilute(plate, 0, N_COLS - 1)
@@ -973,7 +983,7 @@ def run(protocol: protocol_api.ProtocolContext):
                 w = plate.wells_by_name()[w_name]
                 aspirate_from_sources(flex_s, vol, lane)
                 dispense_and_lift(flex_s, vol, w)
-            flex_s.drop_tip()
+            single_finish()
             if secondary is not None:
                 sec_lane, sec_vol = secondary
                 pick_single_tip(sec_lane)
@@ -983,7 +993,7 @@ def run(protocol: protocol_api.ProtocolContext):
                     trailed_dispense(flex_s, sec_vol, w.bottom(2))
                     flex_s.mix(2, MIX_UL, w.bottom(2))
                     flex_s.move_to(w.top(z=-2))
-                flex_s.drop_tip()
+                single_finish()
 
     # =====================================================================
     # Run sequence

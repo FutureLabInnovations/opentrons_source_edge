@@ -159,13 +159,13 @@ requirements = {"robotType": "Flex",  "apiLevel": "2.18"}
 # ---------------------------------------------------------------------------
 # When TRAILING_TEST_ENABLED is True, every call routed through
 # trailed_aspirate() / trailed_dispense() is split into:
-#       1) main step at (vol - TRAILING_VOL_UL)  at the requested location
+#       1) main step at (vol - pipette.min_volume) at the requested location
 #       2) protocol.delay(seconds=TRAILING_DELAY_S)
-#       3) tail step at TRAILING_VOL_UL          at the same location
-# Net volume per logical step is unchanged (vol-eps + eps = vol). Set the
-# toggle to False to silently fall back to a single native aspirate/dispense.
+#       3) tail step at pipette.min_volume          at the same location
+# The tail volume is always the pipette's hardware minimum (Flex 1k = 5 uL,
+# OT-2 P300 GEN2 = 20 uL, etc.) so the visualizer reliably renders the tip
+# height after the larger main draw. Net volume per step is unchanged.
 TRAILING_TEST_ENABLED = True
-TRAILING_VOL_UL       = 0.01
 TRAILING_DELAY_S      = 0.5
 
 
@@ -268,24 +268,15 @@ def run(protocol: protocol_api.ProtocolContext):
 
     # ---------------- test-instrumentation wrappers ----------------
     # See module-level TRAILING_TEST_ENABLED to disable.
-    # The tail step uses max(TRAILING_VOL_UL, pipette.min_volume), so on
-    # pipettes with a hardware floor above 0.01 uL (e.g. Flex 1k = 5 uL),
-    # the 0.01 uL request is silently bumped up to the pipette minimum.
-    # Net volume per logical step is unchanged either way.
-    def _trailed_eps(pipette):
-        return max(TRAILING_VOL_UL,
-                   float(getattr(pipette, "min_volume", TRAILING_VOL_UL)))
-
+    # Always splits the call into (main + delay + tail), where the tail is
+    # exactly pipette.min_volume - the smallest hardware-legal volume the
+    # pipette can deliver. The visualizer renders the tip height after the
+    # main draw during the delay. Net volume per step = vol_ul.
     def trailed_aspirate(pipette, vol_ul, location):
         if not TRAILING_TEST_ENABLED:
             pipette.aspirate(vol_ul, location)
             return
-        eps = _trailed_eps(pipette)
-        if vol_ul < 2 * eps:
-            # Volume too small to split into (main + tail) without one
-            # half going below the pipette minimum; fall back to native.
-            pipette.aspirate(vol_ul, location)
-            return
+        eps = float(pipette.min_volume)
         pipette.aspirate(vol_ul - eps, location)
         protocol.delay(seconds=TRAILING_DELAY_S)
         pipette.aspirate(eps,           location)
@@ -294,10 +285,7 @@ def run(protocol: protocol_api.ProtocolContext):
         if not TRAILING_TEST_ENABLED:
             pipette.dispense(vol_ul, location)
             return
-        eps = _trailed_eps(pipette)
-        if vol_ul < 2 * eps:
-            pipette.dispense(vol_ul, location)
-            return
+        eps = float(pipette.min_volume)
         pipette.dispense(vol_ul - eps, location)
         protocol.delay(seconds=TRAILING_DELAY_S)
         pipette.dispense(eps,           location)

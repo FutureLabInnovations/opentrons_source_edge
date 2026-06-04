@@ -239,6 +239,23 @@ THIRD_STOCK_UL = STOCK_UL // 3   # 50 uL for three-colour mixes (50*3 = 150)
 # Runtime parameters
 # ---------------------------------------------------------------------------
 
+PLATE_PARAM_NAMES = [
+    "run_plate_1_curves",
+    "run_plate_2_synergy",
+    "run_plate_3_multiplex",
+    "run_plate_4_elisa",
+    "run_plate_5_bouquet",
+    "run_plate_6_rings",
+]
+PLATE_PARAM_LABELS = [
+    "Plate 1 - Standard Curves",
+    "Plate 2 - Synergy Matrix",
+    "Plate 3 - Multiplex Blocks",
+    "Plate 4 - ELISA Layout",
+    "Plate 5 - Mixed Bouquet",
+    "Plate 6 - Concentric Rings",
+]
+
 def add_parameters(parameters):
     parameters.add_int(
         variable_name="viewing_delay_s",
@@ -258,6 +275,13 @@ def add_parameters(parameters):
         maximum=900,
         unit="s",
     )
+    for name, label in zip(PLATE_PARAM_NAMES, PLATE_PARAM_LABELS):
+        parameters.add_bool(
+            variable_name=name,
+            display_name=label,
+            description=f"Set to OFF to skip {label.lower()} this run.",
+            default=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1062,8 +1086,24 @@ def run(protocol: protocol_api.ProtocolContext):
     protocol.home()
     protocol.set_rail_lights(True)   # booth lights on
 
-    for i, (plate, workflow) in enumerate(zip(plates, workflow_sequence)):
+    import time
+    _run_started_at = time.time()
+    _plate_times = []   # (label, seconds, was_run)
+    plate_enabled = [
+        getattr(protocol.params, name, True) for name in PLATE_PARAM_NAMES
+    ]
+
+    for i, (plate, workflow, label, enabled) in enumerate(
+        zip(plates, workflow_sequence, PLATE_PARAM_LABELS, plate_enabled)
+    ):
+        if not enabled:
+            protocol.comment(f"  (skipped: {label})")
+            _plate_times.append((label, 0.0, False))
+            continue
+
+        _plate_started_at = time.time()
         workflow(plate, i)
+        _plate_times.append((label, time.time() - _plate_started_at, True))
 
         if incubation_delay_s > 0:
             protocol.delay(
@@ -1075,6 +1115,20 @@ def run(protocol: protocol_api.ProtocolContext):
                 seconds=viewing_delay_s,
                 msg=f"Plate {i + 1}: showing finished plate",
             )
+
+    _run_seconds = time.time() - _run_started_at
+    _plates_run = sum(1 for _, _, was_run in _plate_times if was_run)
+    protocol.comment(
+        f"=== Timing summary: {_plates_run}/{len(plates)} plates in "
+        f"{_run_seconds/60:.1f} min ({_run_seconds:.0f} s) ==="
+    )
+    for _label, _secs, _was_run in _plate_times:
+        if _was_run:
+            protocol.comment(
+                f"  {_label:<32}: {_secs/60:5.2f} min ({_secs:5.0f} s)"
+            )
+        else:
+            protocol.comment(f"  {_label:<32}: (skipped)")
 
     protocol.comment("=== End-of-run reservoir usage (uL remaining per lane) ===")
     for reagent in ("red", "yellow", "blue", "water"):

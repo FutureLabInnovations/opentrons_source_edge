@@ -1,16 +1,26 @@
 """
-Smoke test for the rgyb scripts' liquid-tracking classes and constants.
+Smoke test for the trade-fair demo scripts: import, class behavior,
+and module constants.
 
 Run with::
 
     python3 demos/_smoke_test_rgyb.py
 
-Stubs out the `opentrons` package so the rgyb modules can import without
-the real Opentrons API installed, then exercises LaneTracker /
-WellTracker math + a few constants. Returns non-zero on failure so it
-can sit in a CI step. Not loaded by the protocols themselves; the
-filename starts with underscore to keep the Opentrons app from picking
-it up as a protocol.
+Stubs out the `opentrons` package so the rgyb + painted_lab modules
+can import without the real Opentrons API installed, then runs:
+
+  rgyb:
+      LaneTracker math + LaneExhaustedError boundary
+      WellTracker overflow
+      key volume constants
+  painted_lab:
+      module imports cleanly
+      ESTIMATED_DRAW_UL has all 4 reagents
+      TIP_SECTIONS covers cols 1-12 exactly once
+      key volume constants
+
+Returns non-zero on failure. Filename starts with underscore so the
+Opentrons app doesn't pick it up as a protocol.
 """
 
 import importlib.util
@@ -106,6 +116,35 @@ def _check_constants(mod) -> None:
     assert mod.TRAILING_TEST_ENABLED is True
 
 
+def _check_painted_lab_constants(mod) -> None:
+    # All four primary reagents represented in the estimate table.
+    assert set(mod.ESTIMATED_DRAW_UL) == {"red", "yellow", "blue", "water"}, \
+        mod.ESTIMATED_DRAW_UL
+
+    # Tip sections cover cols 1..12 with no gaps or overlaps.
+    covered = []
+    for color, (start, end) in mod.TIP_SECTIONS.items():
+        covered.extend(range(start, end + 1))
+    assert sorted(covered) == list(range(1, 13)), covered
+
+    # Volume constants match the painted_lab values.
+    assert mod.STOCK_UL == 150
+    assert mod.DILUENT_UL == 75
+    assert mod.XFER_UL == 75
+    assert mod.MIX_UL == 75
+    assert mod.MIX_REPS == 4
+    assert mod.HALF_STOCK_UL == 75
+    assert mod.THIRD_STOCK_UL == 50
+    assert mod.MIN_DISPENSE_UL == 20
+    assert mod.WASH_MIX_UL == 250
+    assert mod.WASH_MIX_REPS == 4
+
+    # Planner buffers.
+    assert mod.OVERHEAD_FRACTION == 0.03
+    assert mod.DEAD_VOLUME_PER_REAGENT_UL == 500
+    assert mod.WORKING_LANE_CAPACITY_UL == 12_000
+
+
 def main() -> int:
     _stub_opentrons()
     failures = 0
@@ -118,6 +157,21 @@ def main() -> int:
             _check_lane_tracker(mod)
             _check_well_tracker(mod)
             _check_constants(mod)
+            print(f"PASS  {name}")
+        except AssertionError as e:
+            failures += 1
+            print(f"FAIL  {name}: AssertionError - {e}")
+        except Exception as e:   # noqa: BLE001
+            failures += 1
+            print(f"FAIL  {name}: {type(e).__name__} - {e}")
+
+    for name in (
+        "trade_fair_painted_lab",
+        "trade_fair_painted_lab_flex",
+    ):
+        try:
+            mod = _load(name)
+            _check_painted_lab_constants(mod)
             print(f"PASS  {name}")
         except AssertionError as e:
             failures += 1

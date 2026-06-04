@@ -448,7 +448,20 @@ def run(protocol: protocol_api.ProtocolContext):
         """Aspirate `vol_per_channel_ul` per channel from `reagent`'s
         assigned lane(s), splitting the call across lanes if the current
         lane runs low mid-aspirate. Updates `remaining_ul` using the
-        8x-consumption model for multi-channel calls (channels=8)."""
+        8x-consumption model for multi-channel calls (channels=8).
+
+        Safe-split guard: a within-call split is only taken if BOTH the
+        portion drawn from this lane and the remainder still to be drawn
+        from the next lane will be >= 2 x pipette.min_volume (so each
+        portion is itself splittable by the trailed wrapper). If the
+        current lane can't satisfy that, we abandon what is left in it
+        and advance - the lane reserves at the bottom are budgeted into
+        the per-lane planning math, so this is just dead volume."""
+        # 2x because the trailed wrapper itself further splits each
+        # aspirate into (step - min) + min, and both halves must be
+        # >= pipette.min_volume.
+        min_splittable_per_channel = 2.0 * float(pipette.min_volume)
+
         remaining_per_channel = float(vol_per_channel_ul)
         while remaining_per_channel > 0:
             lane = _current_lane(reagent)
@@ -459,21 +472,34 @@ def run(protocol: protocol_api.ProtocolContext):
                     "Refill the assigned lane(s) or bump ESTIMATED_DRAW_UL."
                 )
             available_total = remaining_ul.get(lane, 0.0)
-            if available_total <= 0:
-                _advance_lane(reagent)
-                continue
             available_per_channel = available_total / channels
-            step = min(remaining_per_channel, available_per_channel)
-            if step <= 0:
+
+            # Case 1: this lane satisfies the entire remaining call. Take
+            # the whole thing and we're done.
+            if available_per_channel >= remaining_per_channel:
+                trailed_aspirate(pipette, remaining_per_channel, reservoir[lane])
+                remaining_ul[lane] = max(
+                    0.0, available_total - remaining_per_channel * channels
+                )
+                remaining_per_channel = 0.0
+                continue
+
+            # Case 2: lane can't cover the rest. To safely split, BOTH
+            # halves (what we take here, and what we still owe) must be
+            # >= min_splittable_per_channel.
+            leftover_after_this_lane = remaining_per_channel - available_per_channel
+            if (available_per_channel < min_splittable_per_channel
+                    or leftover_after_this_lane < min_splittable_per_channel):
+                # Splitting would create a sub-min portion. Abandon what's
+                # left in this lane (it stays as dead volume) and advance.
                 _advance_lane(reagent)
                 continue
-            trailed_aspirate(pipette, step, reservoir[lane])
-            remaining_ul[lane] = max(0.0, available_total - step * channels)
-            remaining_per_channel -= step
-            if remaining_per_channel > 0:
-                # Drained this lane to satisfy the call; the next iteration
-                # will pick up the next assigned lane and continue.
-                _advance_lane(reagent)
+
+            # Safe split: take everything this lane can give.
+            trailed_aspirate(pipette, available_per_channel, reservoir[lane])
+            remaining_ul[lane] = 0.0
+            remaining_per_channel = leftover_after_this_lane
+            _advance_lane(reagent)
 
     def dispense_and_lift(pipette, vol_ul: int, well, lift_z: int = -2):
         # Proven touch-off-without-touch-tip: dispense above the surface

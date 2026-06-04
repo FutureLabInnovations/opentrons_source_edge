@@ -718,31 +718,25 @@ def run(protocol: protocol_api.ProtocolContext):
     def _wash_well():
         return reservoir[plan["_wash"]["lane"]]
 
-    def multi_wash():
-        # mix(4, 250) is the proven internal-protocol wash pattern. Wash
-        # water lives in the dedicated wash lane (plan["_wash"]["lane"]) -
-        # it slowly picks up trace dye over the run, but nothing is ever
-        # drawn from it, so contamination stays inside that one lane.
+    def wash_tip(pipette):
+        """In-place wash of `pipette` (1- or 8-channel) in the
+        wash lane (plan["_wash"]["lane"]). The wash water slowly
+        picks up trace dye over the run, but nothing is ever
+        drawn from that lane so contamination stays contained."""
         wash_well = _wash_well()
-        p300m.mix(WASH_MIX_REPS, WASH_MIX_UL, wash_well.bottom(2))
-        p300m.blow_out(wash_well.top(-3))
-
-    def single_wash():
-        # Same idea as multi_wash, scaled to the single-channel pipette.
-        wash_well = _wash_well()
-        p300s.mix(WASH_MIX_REPS, WASH_MIX_UL, wash_well.bottom(2))
-        p300s.blow_out(wash_well.top(-3))
+        pipette.mix(WASH_MIX_REPS, WASH_MIX_UL, wash_well.bottom(2))
+        pipette.blow_out(wash_well.top(-3))
 
     def finish_multi():
         # Always wash + return - booth-wide rule: tips are NEVER trashed.
-        multi_wash()
+        wash_tip(p300m)
         p300m.return_tip()
 
     def single_finish(wash: bool = True):
         # Always return; wash if the tip touched concentrated reagent
         # (pass wash=False for tips that only ever saw plain water).
         if wash:
-            single_wash()
+            wash_tip(p300s)
         p300s.return_tip()
 
     # =====================================================================

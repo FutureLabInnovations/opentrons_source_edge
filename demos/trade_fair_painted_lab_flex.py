@@ -900,11 +900,14 @@ def run(protocol: protocol_api.ProtocolContext):
                 dispense_and_lift(flex_m, block_ul, plate.columns()[col][0])
             finish_multi()
             if overlay == "blue_overlay":
-                # Y + B = green
+                # Y + B = green. Mix after the overlay so the wells
+                # actually show a uniform green and not yellow with
+                # blue floating on top.
                 multi_pick_fresh()
                 for col in cols:
                     aspirate_from_sources(flex_m, block_ul, "blue", channels=8)
                     dispense_and_lift(flex_m, block_ul, plate.columns()[col][0])
+                    flex_m.mix(2, MIX_UL, plate.columns()[col][0].bottom(2))
                 finish_multi()
 
     # =====================================================================

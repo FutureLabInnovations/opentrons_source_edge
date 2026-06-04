@@ -687,8 +687,9 @@ def run(protocol: protocol_api.ProtocolContext):
 
     def multi_serial_dilute(plate, first_col: int, last_col_exclusive: int):
         """Multi-channel 1:2 serial dilution across [first_col,
-        last_col_exclusive). Tips are sacrificed at the end (they have
-        seen every colour in the column-1 stocks)."""
+        last_col_exclusive). The tip column has seen every colour in
+        the column-1 stocks by the end, so finish_multi() does the
+        full mix(4, 250) wash before returning the tips to the rack."""
         multi_pick_fresh()
         for col in range(first_col, last_col_exclusive - 1):
             src = plate.columns()[col][0].bottom(2)

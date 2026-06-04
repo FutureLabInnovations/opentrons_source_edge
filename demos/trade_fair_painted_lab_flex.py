@@ -93,7 +93,7 @@ Consumables to prepare before starting:
     A2     : Yellow Dye (1:5 in water)        ~ 9.8 mL
     A3, A4 : Blue Dye  (1:5 in water)         ~12.9 mL total (2 lanes)
     A5, A6 : Diluent Water                    ~23.2 mL total (2 lanes)
-    A12    : Wash Water (multi-channel tip rinse) ~12 mL
+    A12    : Wash Water (single + multi-channel tip rinse) ~12 mL
 
   Total water needed: ~50 mL distilled. Everything lives in the single
   12-channel reservoir - no 50 mL Falcon tubes or bulk reservoirs.

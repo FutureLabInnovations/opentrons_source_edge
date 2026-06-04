@@ -50,9 +50,17 @@ Smart calculations (computed once at run start, printed to the run log):
     per plate x 3 plates = 19_800 uL.
   * Stock needed per colour = 8 wells x 150 uL = 1_200 uL.
   * Pour recommendation = need x (1 + 3% overhead) + 0.5 mL dead
-    volume per reagent, ceiling-divided to fit 13 mL working lane
-    capacity. Diluent auto-spreads across A4..A5; if a lane drains
-    mid-run the protocol advances to the next.
+    volume per reagent + per-lane safe-floor reserve, ceiling-divided
+    to fit the working lane capacity. Diluent auto-spreads across
+    A4..A5; if a lane would drain below its safe-floor reserve mid-run
+    the protocol advances to the next.
+
+Per-plate run switches (top of file):
+  * RUN_PLATE_1_RED / RUN_PLATE_2_YELLOW / RUN_PLATE_3_BLUE - flip
+    any of these to False to skip that plate (useful when tuning one
+    colour or running a single-colour booth demo).
+  * BETWEEN_PLATE_DELAY_S - optional seconds-pause inserted between
+    plates that actually run (0 = no pause).
 
 ==============================================================================
 MATERIALS

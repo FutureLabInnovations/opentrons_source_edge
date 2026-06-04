@@ -30,6 +30,36 @@ Tip discipline:
   * Each colour gets its own 1-channel tip and its own 8-channel tip
     column - no cross-colour reuse.
 
+Liquid tracking:
+  * LaneTracker  - flat-trough version of the proven TubeTracker.
+                    No cone math; uses the lane's rectangular cross-
+                    section (well.length x well.width) to translate
+                    remaining uL to surface height in mm. Returns the
+                    Z target (mm above well floor) for the next
+                    aspirate so the tip stays just below the meniscus
+                    as the lane drains.
+  * WellTracker  - identical to the proven version: tracks the
+                    rising surface in each destination well so the
+                    tip can lift off at top(surface + 1 mm) for clean
+                    droplet break-off (no touch_tip).
+
+Smart calculations (computed once at run start, printed to the run log):
+  * Total diluent needed across 3 plates = 11 cols x 8 rows x 75 uL
+    per plate x 3 plates = 19_800 uL.
+  * Stock needed per colour = 8 wells x 150 uL = 1_200 uL.
+  * Pour recommendation = need x (1 + 3% overhead) + 0.5 mL dead
+    volume per reagent + per-lane safe-floor reserve, ceiling-divided
+    to fit the working lane capacity. Diluent auto-spreads across
+    A4..A5; if a lane would drain below its safe-floor reserve mid-run
+    the protocol advances to the next.
+
+Per-plate run switches (top of file):
+  * RUN_PLATE_1_RED / RUN_PLATE_2_YELLOW / RUN_PLATE_3_BLUE - flip
+    any of these to False to skip that plate (useful when tuning one
+    colour or running a single-colour booth demo).
+  * BETWEEN_PLATE_DELAY_S - optional seconds-pause inserted between
+    plates that actually run (0 = no pause).
+
 ==============================================================================
 MATERIALS
 ==============================================================================

@@ -1216,10 +1216,29 @@ def run(protocol: protocol_api.ProtocolContext):
     )
     _est_total_min = _enabled_plate_minutes + _delay_minutes
     if _trailing_enabled:
+        # Per-plate aspirate+dispense pair counts (eyeballed) x the
+        # TRAILING_DELAY_S pause each split adds. Skipped plates do not
+        # contribute. Tweak the numbers if a workflow refactor changes
+        # the call density significantly.
+        _per_plate_calls = {
+            "Plate 1 - Standard Curves":  128 * 2,
+            "Plate 2 - Synergy Matrix":   332 * 2,
+            "Plate 3 - Multiplex Blocks":  32 * 2,
+            "Plate 4 - ELISA Layout":     144 * 2,
+            "Plate 5 - Mixed Bouquet":    184 * 2,
+            "Plate 6 - Concentric Rings": 116 * 2,
+        }
+        _enabled_calls = sum(
+            _per_plate_calls[label]
+            for label, name in zip(PLATE_PARAM_LABELS, PLATE_PARAM_NAMES)
+            if getattr(protocol.params, name, True)
+        )
+        _trailed_extra_min = _enabled_calls * TRAILING_DELAY_S / 60.0
         protocol.comment(
-            f"Estimated run time: ~{_est_total_min:.0f} min (workflow "
-            f"~{_enabled_plate_minutes} min + delays ~{_delay_minutes:.0f} min "
-            "+ extra latency from the trailed-test wrapper)."
+            f"Estimated run time: ~{_est_total_min + _trailed_extra_min:.0f} min "
+            f"(workflow ~{_enabled_plate_minutes} min + delays "
+            f"~{_delay_minutes:.0f} min + trailed-wrapper latency "
+            f"~{_trailed_extra_min:.0f} min from {_enabled_calls} aspirate/dispense pairs)."
         )
     else:
         protocol.comment(

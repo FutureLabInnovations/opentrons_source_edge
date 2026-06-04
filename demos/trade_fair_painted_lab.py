@@ -140,6 +140,7 @@ SETUP INSTRUCTIONS  (in the order the Opentrons app will walk you through)
 """
 
 import math
+import time
 
 from opentrons import protocol_api
 
@@ -1086,7 +1087,6 @@ def run(protocol: protocol_api.ProtocolContext):
     protocol.home()
     protocol.set_rail_lights(True)   # booth lights on
 
-    import time
     _run_started_at = time.time()
     _plate_times = []   # (label, seconds, was_run)
     plate_enabled = [

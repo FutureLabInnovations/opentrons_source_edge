@@ -40,8 +40,8 @@ Plates (in run order):
                                     - the "showpiece" plate.
 
 Pipettes (no modules used):
-  - left  : P300 Single-Channel GEN2  -> sample loading, controls, painting
-  - right : P300 Multi-Channel  GEN2  -> bulk fills, serial dilution
+  - left  : Flex 1-Channel 1000 uL  -> sample loading, controls, painting
+  - right : Flex 8-Channel 1000 uL  -> bulk fills, serial dilution
 
 Tip strategy (real-lab practice):
   Single-channel rack is sectioned by reagent so a tip never sees more
@@ -140,6 +140,7 @@ SETUP INSTRUCTIONS  (in the order the Opentrons app will walk you through)
 """
 
 import math
+import time
 
 from opentrons import protocol_api
 
@@ -1088,7 +1089,6 @@ def run(protocol: protocol_api.ProtocolContext):
     protocol.home()
     protocol.set_rail_lights(True)   # booth lights on
 
-    import time
     _run_started_at = time.time()
     _plate_times = []   # (label, seconds, was_run)
     plate_enabled = [

@@ -295,6 +295,18 @@ PLATE_MINUTES_ESTIMATE = {
     "Plate 5 - Mixed Bouquet":    20,
     "Plate 6 - Concentric Rings": 30,
 }
+# Eyeballed per-plate aspirate+dispense pair counts. The trailed-test
+# wrapper adds TRAILING_DELAY_S per pair; the run-time projection at
+# the top of run() multiplies through.
+PLATE_CALLS_ESTIMATE = {
+    "Plate 1 - Standard Curves":  128 * 2,
+    "Plate 2 - Synergy Matrix":   332 * 2,
+    "Plate 3 - Multiplex Blocks":  32 * 2,
+    "Plate 4 - ELISA Layout":     144 * 2,
+    "Plate 5 - Mixed Bouquet":    184 * 2,
+    "Plate 6 - Concentric Rings": 116 * 2,
+}
+
 
 
 def add_parameters(parameters):

@@ -1130,6 +1130,40 @@ def run(protocol: protocol_api.ProtocolContext):
         f"+{DEAD_VOLUME_PER_REAGENT_UL} uL dead volume per reagent."
     )
 
+    # Rough run-time projection. The numbers are eyeballed from prior
+    # runs and assume default delay parameters. Skipped plates subtract
+    # their share; trailed-test instrumentation adds the per-step delay.
+    _per_plate_minutes = {
+        "Plate 1 - Standard Curves":  15,
+        "Plate 2 - Synergy Matrix":   25,
+        "Plate 3 - Multiplex Blocks":  8,
+        "Plate 4 - ELISA Layout":     25,
+        "Plate 5 - Mixed Bouquet":    20,
+        "Plate 6 - Concentric Rings": 30,
+    }
+    _enabled_plate_minutes = sum(
+        _per_plate_minutes[label]
+        for label, name in zip(PLATE_PARAM_LABELS, PLATE_PARAM_NAMES)
+        if getattr(protocol.params, name, True)
+    )
+    _delay_minutes = (
+        (viewing_delay_s + incubation_delay_s)
+        * sum(1 for n in PLATE_PARAM_NAMES if getattr(protocol.params, n, True))
+        / 60.0
+    )
+    _est_total_min = _enabled_plate_minutes + _delay_minutes
+    if TRAILING_TEST_ENABLED:
+        protocol.comment(
+            f"Estimated run time: ~{_est_total_min:.0f} min (workflow "
+            f"~{_enabled_plate_minutes} min + delays ~{_delay_minutes:.0f} min "
+            "+ extra latency from the trailed-test wrapper)."
+        )
+    else:
+        protocol.comment(
+            f"Estimated run time: ~{_est_total_min:.0f} min (workflow "
+            f"~{_enabled_plate_minutes} min + delays ~{_delay_minutes:.0f} min)."
+        )
+
     if PRE_FLIGHT_PAUSE:
         protocol.pause(PRE_FLIGHT_PAUSE_MSG)
     protocol.home()

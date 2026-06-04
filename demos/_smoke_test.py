@@ -179,6 +179,14 @@ def _check_painted_lab_constants(mod) -> None:
     for label, minutes in mod.PLATE_MINUTES_ESTIMATE.items():
         assert isinstance(minutes, int) and minutes > 0, (label, minutes)
 
+    # PLATE_CALLS_ESTIMATE must cover the same set of labels with
+    # positive int values.
+    assert set(mod.PLATE_CALLS_ESTIMATE) == set(mod.PLATE_PARAM_LABELS), (
+        mod.PLATE_CALLS_ESTIMATE.keys(), mod.PLATE_PARAM_LABELS,
+    )
+    for label, count in mod.PLATE_CALLS_ESTIMATE.items():
+        assert isinstance(count, int) and count > 0, (label, count)
+
 
 def _check_painted_lab_planner_math(mod) -> None:
     """Reproduce the painted_lab sourcing-planner math from the constants

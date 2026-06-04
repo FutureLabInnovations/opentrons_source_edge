@@ -351,6 +351,30 @@ def run(protocol: protocol_api.ProtocolContext):
     )
 
     # -----------------------------------------------------------------------
+    # Pipette / volume compatibility check
+    # -----------------------------------------------------------------------
+    # Catches overflow before the protocol moves, and prints a WARN line
+    # if any volume + the trailing wrapper would push the main step below
+    # the pipette's minimum (e.g. STOCK_UL=150 on a 75-uL-min pipette).
+    _planned_volumes = (STOCK_UL, DILUENT_UL, XFER_UL, MIX_UL, WASH_MIX_UL)
+    for _pip in (p300s, p300m):
+        _vmax = max(_planned_volumes)
+        if _vmax > _pip.max_volume:
+            raise ValueError(
+                f"{_pip.name} max is {_pip.max_volume} uL but the protocol "
+                f"plans an aspirate / dispense / mix of {_vmax} uL."
+            )
+        if TRAILING_TEST_ENABLED:
+            _vmin_main = min(_planned_volumes) - float(_pip.min_volume)
+            if _vmin_main < float(_pip.min_volume):
+                protocol.comment(
+                    f"WARN: trailed wrapper on {_pip.name}: smallest planned "
+                    f"vol {min(_planned_volumes)} uL would have main step "
+                    f"{_vmin_main:.1f} uL, below pipette min "
+                    f"{_pip.min_volume} uL. Hardware may reject."
+                )
+
+    # -----------------------------------------------------------------------
     # Smart calculations (per-reagent need + pour recommendation)
     # -----------------------------------------------------------------------
     # Compute the per-lane unusable reserve from the actual reservoir

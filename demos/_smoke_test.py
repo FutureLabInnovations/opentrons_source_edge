@@ -165,6 +165,13 @@ def _check_painted_lab_constants(mod) -> None:
     assert set(mod.TIP_SECTIONS) == {"red", "yellow", "blue", "wash"}, \
         mod.TIP_SECTIONS
 
+    # PLATE_PARAM_NAMES + PLATE_PARAM_LABELS must agree on length and
+    # cover all six plates (the run loop zips them together).
+    assert len(mod.PLATE_PARAM_NAMES) == 6, mod.PLATE_PARAM_NAMES
+    assert len(mod.PLATE_PARAM_LABELS) == 6, mod.PLATE_PARAM_LABELS
+    for name in mod.PLATE_PARAM_NAMES:
+        assert name.startswith("run_plate_"), name
+
     # Volume constants match the painted_lab values.
     assert mod.STOCK_UL == 150
     assert mod.DILUENT_UL == 75

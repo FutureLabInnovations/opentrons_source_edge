@@ -125,8 +125,22 @@ metadata = {
 }
 
 # apiLevel 2.16 supports Flex + define_liquid + load_liquid + load_trash_bin.
+
 requirements = {"robotType": "Flex", "apiLevel": "2.16"}
 
+
+# ---------------------------------------------------------------------------
+# Pre-flight booth pause (opt-in)
+# ---------------------------------------------------------------------------
+# When True, the protocol calls protocol.pause() right after the pre-flight
+# comment block so the booth crew can double-check the lane fills against
+# the printed plan before the run actually starts. Press "Resume" in the
+# Opentrons app to continue. Default OFF so unattended booth runs work.
+PRE_FLIGHT_PAUSE = False
+PRE_FLIGHT_PAUSE_MSG = (
+    "Verify each reservoir lane is poured to the planned volume above, "
+    "then press Resume to start the run."
+)
 # ---------------------------------------------------------------------------
 # Test instrumentation
 # ---------------------------------------------------------------------------
@@ -567,6 +581,8 @@ def run(protocol: protocol_api.ProtocolContext):
     # -----------------------------------------------------------------------
     # Run order
     # -----------------------------------------------------------------------
+    if PRE_FLIGHT_PAUSE:
+        protocol.pause(PRE_FLIGHT_PAUSE_MSG)
     protocol.home()
     protocol.set_rail_lights(True)
 

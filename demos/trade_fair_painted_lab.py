@@ -156,8 +156,22 @@ metadata = {
 
 # 2.18+ is required for runtime parameters (add_parameters / protocol.params).
 # define_liquid() and load_liquid() are available from 2.14+, so 2.18 covers both.
+
 requirements = {"robotType": "OT-2", "apiLevel": "2.18"}
 
+
+# ---------------------------------------------------------------------------
+# Pre-flight booth pause (opt-in)
+# ---------------------------------------------------------------------------
+# When True, the protocol calls protocol.pause() right after the pre-flight
+# comment block so the booth crew can double-check the lane fills against
+# the printed plan before the run actually starts. Press "Resume" in the
+# Opentrons app to continue. Default OFF so unattended booth runs work.
+PRE_FLIGHT_PAUSE = False
+PRE_FLIGHT_PAUSE_MSG = (
+    "Verify each reservoir lane is poured to the planned volume above, "
+    "then press Resume to start the run."
+)
 # ---------------------------------------------------------------------------
 # Test instrumentation
 # ---------------------------------------------------------------------------
@@ -1084,6 +1098,8 @@ def run(protocol: protocol_api.ProtocolContext):
         f"+{DEAD_VOLUME_PER_REAGENT_UL} uL dead volume per reagent."
     )
 
+    if PRE_FLIGHT_PAUSE:
+        protocol.pause(PRE_FLIGHT_PAUSE_MSG)
     protocol.home()
     protocol.set_rail_lights(True)   # booth lights on
 

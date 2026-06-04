@@ -436,11 +436,20 @@ def run(protocol: protocol_api.ProtocolContext):
         + LANE_UNUSABLE_RESERVE,
     )
 
-    DILUENT_LANE_NAMES = ["A4", "A5", "A6", "A7"][:n_diluent_lanes]
-    WASH_LANE_NAME     = "A6" if n_diluent_lanes <= 2 else "A12"
-    # Make sure wash lane never collides with diluent lanes
-    while WASH_LANE_NAME in DILUENT_LANE_NAMES:
-        WASH_LANE_NAME = "A" + str(int(WASH_LANE_NAME[1:]) + 1)
+    # Diluent grabs the next n_diluent_lanes lanes starting at A4. Wash
+    # gets the lane right after, capped at A12 so we stay inside the
+    # 12-channel reservoir. The previous hard-coded ["A4", "A5", "A6",
+    # "A7"][:n] form silently truncated for n > 4; the dynamic generator
+    # always returns exactly n lane names.
+    DILUENT_LANE_NAMES = [f"A{4 + i}" for i in range(n_diluent_lanes)]
+    _wash_idx          = min(12, 4 + n_diluent_lanes)
+    if _wash_idx <= 4 + n_diluent_lanes - 1:
+        raise RuntimeError(
+            f"No reservoir lane left for wash water: diluent claimed "
+            f"{n_diluent_lanes} lane(s) starting at A4. Drop "
+            f"ESTIMATED_DRAW for diluent or use a wider reservoir."
+        )
+    WASH_LANE_NAME = f"A{_wash_idx}"
 
     # -----------------------------------------------------------------------
     # Liquid definitions (Liquid Setup screen in the app)

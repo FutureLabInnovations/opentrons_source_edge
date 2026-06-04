@@ -299,6 +299,27 @@ def add_parameters(parameters):
             description=f"Set to OFF to skip {label.lower()} this run.",
             default=True,
         )
+    parameters.add_bool(
+        variable_name="trailing_test_enabled",
+        display_name="Trailed test mode",
+        description=(
+            "Split every aspirate/dispense into (V - pipette.min_volume) "
+            "+ a short pause + pipette.min_volume at the same height. "
+            "Useful for visualizer inspection. Defaults match the "
+            "TRAILING_TEST_ENABLED module constant."
+        ),
+        default=TRAILING_TEST_ENABLED,
+    )
+    parameters.add_bool(
+        variable_name="pre_flight_pause",
+        display_name="Pre-flight booth pause",
+        description=(
+            "Pause after the pre-flight comment block prints, so the booth "
+            "crew can verify the reservoir matches the planned pour before "
+            "the run actually starts."
+        ),
+        default=PRE_FLIGHT_PAUSE,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -316,13 +337,20 @@ def run(protocol: protocol_api.ProtocolContext):
     # main draw during the delay. Net volume per step = vol_ul.
     # Call-count tracker. Read by the end-of-run summary; not used by the
     # wrapper itself. trailed_aspirate / trailed_dispense bump these on
-    # every call (including the no-op fallback when TRAILING_TEST_ENABLED
-    # is False) so the counts reflect logical aspirate/dispense steps.
+    # every call (including the no-op fallback when the test mode is
+    # off) so the counts reflect logical aspirate/dispense steps.
     _trailed_counts = {"asp": 0, "disp": 0}
+
+    # The RTPs added in add_parameters() take precedence over the module
+    # constants when present (apiLevel 2.18+). getattr-fallback so the
+    # protocol still imports cleanly under older API stubs.
+    _trailing_enabled = getattr(
+        protocol.params, "trailing_test_enabled", TRAILING_TEST_ENABLED,
+    )
 
     def trailed_aspirate(pipette, vol_ul, location):
         _trailed_counts["asp"] += 1
-        if not TRAILING_TEST_ENABLED:
+        if not _trailing_enabled:
             pipette.aspirate(vol_ul, location)
             return
         eps = float(pipette.min_volume)
@@ -332,7 +360,7 @@ def run(protocol: protocol_api.ProtocolContext):
 
     def trailed_dispense(pipette, vol_ul, location):
         _trailed_counts["disp"] += 1
-        if not TRAILING_TEST_ENABLED:
+        if not _trailing_enabled:
             pipette.dispense(vol_ul, location)
             return
         eps = float(pipette.min_volume)
@@ -486,7 +514,7 @@ def run(protocol: protocol_api.ProtocolContext):
                 f"{_pip.name} max is {_pip.max_volume} uL but the protocol "
                 f"plans an aspirate / dispense / mix of {_vmax} uL."
             )
-        if TRAILING_TEST_ENABLED:
+        if _trailing_enabled:
             _vmin_main = min(_planned_volumes) - float(_pip.min_volume)
             if _vmin_main < float(_pip.min_volume):
                 protocol.comment(
@@ -1158,7 +1186,7 @@ def run(protocol: protocol_api.ProtocolContext):
         / 60.0
     )
     _est_total_min = _enabled_plate_minutes + _delay_minutes
-    if TRAILING_TEST_ENABLED:
+    if _trailing_enabled:
         protocol.comment(
             f"Estimated run time: ~{_est_total_min:.0f} min (workflow "
             f"~{_enabled_plate_minutes} min + delays ~{_delay_minutes:.0f} min "
@@ -1170,7 +1198,7 @@ def run(protocol: protocol_api.ProtocolContext):
             f"~{_enabled_plate_minutes} min + delays ~{_delay_minutes:.0f} min)."
         )
 
-    if PRE_FLIGHT_PAUSE:
+    if getattr(protocol.params, "pre_flight_pause", PRE_FLIGHT_PAUSE):
         protocol.pause(PRE_FLIGHT_PAUSE_MSG)
     protocol.home()
     protocol.set_rail_lights(True)   # booth lights on

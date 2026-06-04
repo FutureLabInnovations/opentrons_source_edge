@@ -237,6 +237,20 @@ DEAD_VOLUME_UL    = 500     # 0.5 mL per reagent
 LANE_USABLE_UL    = 13_000  # 13 mL working fill per NEST lane
 
 
+# ---------------------------------------------------------------------------
+# Per-plate run switches (flip to False to skip a plate; useful while
+# tuning a single colour or for booth demos that only want one example).
+# ---------------------------------------------------------------------------
+RUN_PLATE_1_RED    = True
+RUN_PLATE_2_YELLOW = True
+RUN_PLATE_3_BLUE   = True
+
+# Optional pause between plates (seconds). 0 disables. Useful when the
+# booth crew wants to flip plate lids between colours, or for visitors
+# to inspect the gradients before the next plate starts.
+BETWEEN_PLATE_DELAY_S = 0
+
+
 # ===========================================================================
 # Protocol
 # ===========================================================================
@@ -525,9 +539,25 @@ def run(protocol: protocol_api.ProtocolContext):
     protocol.home()
     protocol.set_rail_lights(True)
 
-    run_one_plate(target_plate_1, "red",    single_tip_index=0, multi_tip_col_index=1)
-    run_one_plate(target_plate_2, "yellow", single_tip_index=1, multi_tip_col_index=2)
-    run_one_plate(target_plate_3, "blue",   single_tip_index=2, multi_tip_col_index=3)
+    plates_run = 0
+    pending = [
+        (RUN_PLATE_1_RED,    target_plate_1, "red",    0, 1),
+        (RUN_PLATE_2_YELLOW, target_plate_2, "yellow", 1, 2),
+        (RUN_PLATE_3_BLUE,   target_plate_3, "blue",   2, 3),
+    ]
+    for enabled, plate, colour, sng_tip, mlt_col in pending:
+        if not enabled:
+            protocol.comment(f"  (skipped: {colour} on {plate.parent})")
+            continue
+        if plates_run > 0 and BETWEEN_PLATE_DELAY_S > 0:
+            protocol.comment(
+                f"  ... between-plate pause: {BETWEEN_PLATE_DELAY_S} s ..."
+            )
+            protocol.delay(seconds=BETWEEN_PLATE_DELAY_S)
+        run_one_plate(plate, colour,
+                      single_tip_index=sng_tip, multi_tip_col_index=mlt_col)
+        plates_run += 1
+    protocol.comment(f"\n=== Plates completed: {plates_run}/3 ===")
 
     # -----------------------------------------------------------------------
     # End-of-run usage report

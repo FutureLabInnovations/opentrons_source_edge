@@ -1240,6 +1240,7 @@ def run(protocol: protocol_api.ProtocolContext):
         _asp_at_start = _trailed_counts["asp"]
         _disp_at_start = _trailed_counts["disp"]
         workflow(plate, i)
+        protocol.comment(f"--- {label} complete ---")
         _plate_times.append((
             label,
             time.time() - _plate_started_at,

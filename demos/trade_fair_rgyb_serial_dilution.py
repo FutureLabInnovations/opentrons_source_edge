@@ -568,7 +568,8 @@ def run(protocol: protocol_api.ProtocolContext):
     def wash_tip(pipette):
         # In-place wash. Multi-channel still does mix(4, 250) - the wash
         # lane is a wide trough so all 8 channels reach into the same lane.
-        pipette.move_to(wash_well.bottom(z=2))
+        # pipette.mix already moves to the target location; no
+        # explicit move_to needed beforehand.
         pipette.mix(WASH_MIX_REPS, WASH_MIX_UL, wash_well.bottom(z=2))
         pipette.blow_out(wash_well.top(z=-2))
 

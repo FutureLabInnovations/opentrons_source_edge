@@ -243,6 +243,8 @@ DILUENT_UL  = 75
 XFER_UL     = 75
 MIX_UL      = 75
 MIX_REPS    = 4
+WASH_MIX_UL = 250   # in-place tip-wash volume (per mix cycle)
+WASH_MIX_REPS = 4
 
 # Sub-stock volumes for two- and three-colour mixes (so stock col 1 still
 # ends up at 150 uL total, matching the proven dilution math).
@@ -461,6 +463,34 @@ def run(protocol: protocol_api.ProtocolContext):
     flex_m.flow_rate.dispense = 200
 
     # =====================================================================
+    # Pipette / volume compatibility check
+    # =====================================================================
+    # Catches overflow before the protocol moves, and prints a WARN line
+    # when the trailing wrapper would push the main step below the
+    # pipette's minimum (the user's "always split, no skipping" rule
+    # means we do not silently bypass - we just warn).
+    _planned_volumes = (
+        STOCK_UL, DILUENT_UL, XFER_UL, MIX_UL,
+        HALF_STOCK_UL, THIRD_STOCK_UL, MIN_DISPENSE_UL, WASH_MIX_UL,
+    )
+    for _pip in (flex_s, flex_m):
+        _vmax = max(_planned_volumes)
+        if _vmax > _pip.max_volume:
+            raise ValueError(
+                f"{_pip.name} max is {_pip.max_volume} uL but the protocol "
+                f"plans an aspirate / dispense / mix of {_vmax} uL."
+            )
+        if TRAILING_TEST_ENABLED:
+            _vmin_main = min(_planned_volumes) - float(_pip.min_volume)
+            if _vmin_main < float(_pip.min_volume):
+                protocol.comment(
+                    f"WARN: trailed wrapper on {_pip.name}: smallest planned "
+                    f"vol {min(_planned_volumes)} uL would have main step "
+                    f"{_vmin_main:.1f} uL, below pipette min "
+                    f"{_pip.min_volume} uL. Hardware may reject."
+                )
+
+    # =====================================================================
     # Source tracking + within-aspirate lane splitting
     # =====================================================================
     # Per-lane remaining-volume tracker. Ported from the NCBL v13 protocol's
@@ -622,13 +652,13 @@ def run(protocol: protocol_api.ProtocolContext):
         # it slowly picks up trace dye over the run, but nothing is ever
         # drawn from it, so contamination stays inside that one lane.
         wash_well = _wash_well()
-        flex_m.mix(4, 250, wash_well.bottom(2))
+        flex_m.mix(WASH_MIX_REPS, WASH_MIX_UL, wash_well.bottom(2))
         flex_m.blow_out(wash_well.top(-3))
 
     def single_wash():
         # Same idea as multi_wash, scaled to the single-channel pipette.
         wash_well = _wash_well()
-        flex_s.mix(4, 250, wash_well.bottom(2))
+        flex_s.mix(WASH_MIX_REPS, WASH_MIX_UL, wash_well.bottom(2))
         flex_s.blow_out(wash_well.top(-3))
 
     def finish_multi():

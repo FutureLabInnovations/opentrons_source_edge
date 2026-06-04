@@ -437,6 +437,30 @@ def run(protocol: protocol_api.ProtocolContext):
             remaining_ul[lane] = float(start)
     current_lane_idx = {r: 0 for r in ("red", "yellow", "blue", "water")}
 
+    # Cache the per-lane cross-section so tip-height math is one multiply.
+    # NEST 12-channel lanes are rectangular troughs; well.length x well.width.
+    lane_area_mm2: dict = {}
+    for lane in list(remaining_ul.keys()) + [plan["_wash"]["lane"]]:
+        well = reservoir[lane]
+        length = float(getattr(well, "length", None) or 8.0)
+        width  = float(getattr(well, "width",  None) or 70.0)
+        lane_area_mm2[lane] = length * width
+
+    # Constants for the aspirate-Z calc. The tip sits ASPIRATE_SAFETY_MM
+    # below the post-aspirate meniscus, never closer than ASPIRATE_MIN_Z_MM
+    # to the floor (so a small overshoot does not crash the tip).
+    ASPIRATE_SAFETY_MM = 1.5
+    ASPIRATE_MIN_Z_MM  = 1.0
+
+    def lane_aspirate_z(lane: str, vol_ul_to_draw: float) -> float:
+        """Return the tip Z target (mm above lane floor) for an upcoming
+        aspirate of `vol_ul_to_draw` total uL from `lane`. Does not
+        decrement the tracker - the caller updates remaining_ul[]
+        after the actual pipette.aspirate succeeds."""
+        post_volume_ul = max(0.0, remaining_ul[lane] - vol_ul_to_draw)
+        post_surface_mm = post_volume_ul / lane_area_mm2[lane]
+        return max(ASPIRATE_MIN_Z_MM, post_surface_mm - ASPIRATE_SAFETY_MM)
+
     def _advance_lane(reagent: str) -> None:
         current_lane_idx[reagent] += 1
 
@@ -480,10 +504,12 @@ def run(protocol: protocol_api.ProtocolContext):
             # Case 1: this lane satisfies the entire remaining call. Take
             # the whole thing and we're done.
             if available_per_channel >= remaining_per_channel:
-                trailed_aspirate(pipette, remaining_per_channel, reservoir[lane])
-                remaining_ul[lane] = max(
-                    0.0, available_total - remaining_per_channel * channels
+                total_drawn = remaining_per_channel * channels
+                z = lane_aspirate_z(lane, total_drawn)
+                trailed_aspirate(
+                    pipette, remaining_per_channel, reservoir[lane].bottom(z)
                 )
+                remaining_ul[lane] = max(0.0, available_total - total_drawn)
                 remaining_per_channel = 0.0
                 continue
 
@@ -499,7 +525,10 @@ def run(protocol: protocol_api.ProtocolContext):
                 continue
 
             # Safe split: take everything this lane can give.
-            trailed_aspirate(pipette, available_per_channel, reservoir[lane])
+            z = lane_aspirate_z(lane, available_total)
+            trailed_aspirate(
+                pipette, available_per_channel, reservoir[lane].bottom(z)
+            )
             remaining_ul[lane] = 0.0
             remaining_per_channel = leftover_after_this_lane
             _advance_lane(reagent)

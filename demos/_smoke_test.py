@@ -179,6 +179,29 @@ def _check_painted_lab_constants(mod) -> None:
     for label, minutes in mod.PLATE_MINUTES_ESTIMATE.items():
         assert isinstance(minutes, int) and minutes > 0, (label, minutes)
 
+
+def _check_painted_lab_planner_math(mod) -> None:
+    """Reproduce the painted_lab sourcing-planner math from the constants
+    and verify the per-reagent pour and lane count match what the
+    inlined planner inside run() will produce."""
+    import math as _math
+    expected = {}
+    for reagent, est in mod.ESTIMATED_DRAW_UL.items():
+        with_buffer = est * (1.0 + mod.OVERHEAD_FRACTION) + mod.DEAD_VOLUME_PER_REAGENT_UL
+        n_lanes = max(1, _math.ceil(with_buffer / mod.WORKING_LANE_CAPACITY_UL))
+        expected[reagent] = (with_buffer, n_lanes)
+    assert expected["red"]    == (11_830.0, 1), expected["red"]
+    assert expected["yellow"] == ( 9_770.0, 1), expected["yellow"]
+    assert expected["blue"]   == (12_860.0, 2), expected["blue"]
+    assert expected["water"]  == (23_160.0, 2), expected["water"]
+
+    total_lanes = sum(n for _, n in expected.values())
+    assert total_lanes == 6, total_lanes
+    # Total lanes + wash lane (A12) fits comfortably in the 12-lane reservoir.
+    assert total_lanes <= len(mod.ASSIGNABLE_LANES), (
+        total_lanes, len(mod.ASSIGNABLE_LANES),
+    )
+
     # Volume constants match the painted_lab values.
     assert mod.STOCK_UL == 150
     assert mod.DILUENT_UL == 75
@@ -225,6 +248,7 @@ def main() -> int:
         try:
             mod = _load(name)
             _check_painted_lab_constants(mod)
+            _check_painted_lab_planner_math(mod)
             print(f"PASS  {name}")
         except AssertionError as e:
             failures += 1

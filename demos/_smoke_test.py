@@ -152,12 +152,18 @@ def _check_painted_lab_constants(mod) -> None:
     # All four primary reagents represented in the estimate table.
     assert set(mod.ESTIMATED_DRAW_UL) == {"red", "yellow", "blue", "water"}, \
         mod.ESTIMATED_DRAW_UL
+    # Each estimated draw is a positive integer microlitre count.
+    for k, v in mod.ESTIMATED_DRAW_UL.items():
+        assert isinstance(v, int) and v > 0, (k, v)
 
     # Tip sections cover cols 1..12 with no gaps or overlaps.
     covered = []
     for color, (start, end) in mod.TIP_SECTIONS.items():
         covered.extend(range(start, end + 1))
     assert sorted(covered) == list(range(1, 13)), covered
+    # And exactly four sections - red, yellow, blue, wash.
+    assert set(mod.TIP_SECTIONS) == {"red", "yellow", "blue", "wash"}, \
+        mod.TIP_SECTIONS
 
     # Volume constants match the painted_lab values.
     assert mod.STOCK_UL == 150

@@ -114,6 +114,38 @@ def _check_constants(mod) -> None:
     assert mod.WASH_MIX_UL == 250
     assert mod.WASH_MIX_REPS == 4
     assert mod.TRAILING_TEST_ENABLED is True
+    assert mod.OVERHEAD_FRACTION == 0.03
+    assert mod.DEAD_VOLUME_UL == 500
+    assert mod.LANE_USABLE_UL == 13_000
+
+
+def _check_smart_calc(mod) -> None:
+    """Reproduce the rgyb planner math by hand and verify it matches the
+    constants. Catches regressions in the smart-calc block that would
+    quietly change pour recommendations."""
+    area_mm2 = 8.35 * 71.25
+    reserve = (2.0 + 1.0) * area_mm2
+
+    need = 11 * 8 * mod.DILUENT_UL * 3
+    assert need == 19_800
+
+    n = 1
+    while True:
+        pour = need * (1 + mod.OVERHEAD_FRACTION) + mod.DEAD_VOLUME_UL + reserve * n
+        if pour / n <= mod.LANE_USABLE_UL:
+            break
+        n += 1
+        if n > 10:
+            raise RuntimeError("Smart-calc converged outside expected band")
+    assert n == 2, f"diluent lane count = {n} (expected 2)"
+    assert 12_200 < pour / n < 12_300, f"diluent pour/lane = {pour/n:.0f}"
+
+    stock_need = 8 * mod.STOCK_UL
+    stock_pour = max(
+        5_000.0,
+        stock_need * (1 + mod.OVERHEAD_FRACTION) + mod.DEAD_VOLUME_UL + reserve,
+    )
+    assert stock_pour == 5_000.0, f"stock pour = {stock_pour} (expected 5000.0)"
 
 
 def _check_painted_lab_constants(mod) -> None:
@@ -157,6 +189,7 @@ def main() -> int:
             _check_lane_tracker(mod)
             _check_well_tracker(mod)
             _check_constants(mod)
+            _check_smart_calc(mod)
             print(f"PASS  {name}")
         except AssertionError as e:
             failures += 1

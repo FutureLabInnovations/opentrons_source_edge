@@ -505,6 +505,26 @@ def run(protocol: protocol_api.ProtocolContext):
         "(no draws, in-place mix only)"
     )
 
+    # Rough run-time projection. ~15 min per enabled plate (88 diluent
+    # transfers + 8 stock + 11 serial-dilution mixes); trailed-wrapper
+    # latency adds TRAILING_DELAY_S per asp+disp pair.
+    _enabled_plates = sum(int(b) for b in (RUN_PLATE_1_RED, RUN_PLATE_2_YELLOW, RUN_PLATE_3_BLUE))
+    _est_workflow_min = 15 * _enabled_plates
+    _est_pause_min    = BETWEEN_PLATE_DELAY_S * max(0, _enabled_plates - 1) / 60.0
+    if TRAILING_TEST_ENABLED:
+        # ~(88 + 8 + 11x8) = ~184 asp+disp pairs per plate.
+        _est_trailed_min = 184 * _enabled_plates * TRAILING_DELAY_S / 60.0
+        protocol.comment(
+            f"Estimated run time: ~{_est_workflow_min + _est_pause_min + _est_trailed_min:.0f} "
+            f"min (workflow ~{_est_workflow_min} min + pauses ~{_est_pause_min:.0f} min "
+            f"+ trailed-wrapper latency ~{_est_trailed_min:.0f} min)."
+        )
+    else:
+        protocol.comment(
+            f"Estimated run time: ~{_est_workflow_min + _est_pause_min:.0f} min "
+            f"(workflow ~{_est_workflow_min} min + pauses ~{_est_pause_min:.0f} min)."
+        )
+
     # -----------------------------------------------------------------------
     # Liquid trackers
     # -----------------------------------------------------------------------

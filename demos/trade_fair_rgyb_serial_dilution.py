@@ -312,7 +312,14 @@ def run(protocol: protocol_api.ProtocolContext):
     # exactly pipette.min_volume - the smallest hardware-legal volume the
     # pipette can deliver. The visualizer renders the tip height after the
     # main draw during the delay. Net volume per step = vol_ul.
+    # Call-count tracker. Read by the end-of-run summary; not used by the
+    # wrapper itself. trailed_aspirate / trailed_dispense bump these on
+    # every call (including the no-op fallback when TRAILING_TEST_ENABLED
+    # is False) so the counts reflect logical aspirate/dispense steps.
+    _trailed_counts = {"asp": 0, "disp": 0}
+
     def trailed_aspirate(pipette, vol_ul, location):
+        _trailed_counts["asp"] += 1
         if not TRAILING_TEST_ENABLED:
             pipette.aspirate(vol_ul, location)
             return
@@ -322,6 +329,7 @@ def run(protocol: protocol_api.ProtocolContext):
         pipette.aspirate(eps,           location)
 
     def trailed_dispense(pipette, vol_ul, location):
+        _trailed_counts["disp"] += 1
         if not TRAILING_TEST_ENABLED:
             pipette.dispense(vol_ul, location)
             return
@@ -650,6 +658,11 @@ def run(protocol: protocol_api.ProtocolContext):
     protocol.comment(
         f"\n=== Tips used: {plates_run} single + {plates_run} 8-channel column "
         f"(returned to rack; none discarded) ==="
+    )
+    protocol.comment(
+        f"=== Trailed wrapper calls: aspirate={_trailed_counts['asp']}, "
+        f"dispense={_trailed_counts['disp']} "
+        f"(each step adds ~{TRAILING_DELAY_S}s of pause when enabled) ==="
     )
 
     protocol.comment("\n=== End-of-run reservoir usage (uL remaining per lane) ===")

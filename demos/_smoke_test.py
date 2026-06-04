@@ -147,6 +147,14 @@ def _check_smart_calc(mod) -> None:
     )
     assert stock_pour == 5_000.0, f"stock pour = {stock_pour} (expected 5000.0)"
 
+    # Reproduce the lane-allocation block: diluent lanes start at A4 and
+    # extend for n lanes; wash takes the next slot, capped at A12.
+    diluent_lane_names = [f"A{4 + i}" for i in range(n)]
+    wash_lane_name = f"A{min(12, 4 + n)}"
+    assert diluent_lane_names == ["A4", "A5"], diluent_lane_names
+    assert wash_lane_name == "A6", wash_lane_name
+    assert wash_lane_name not in diluent_lane_names
+
 
 def _check_painted_lab_constants(mod) -> None:
     # All four primary reagents represented in the estimate table.

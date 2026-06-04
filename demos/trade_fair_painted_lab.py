@@ -286,6 +286,19 @@ PLATE_PARAM_LABELS = [
     "Plate 6 - Concentric Rings",
 ]
 
+# Eyeballed per-plate workflow minutes (excludes RTPs viewing_delay_s /
+# incubation_delay_s and the trailed-wrapper latency). The runtime
+# estimate at the top of run() reads from this; bump the numbers if
+# you tune a workflow significantly.
+PLATE_MINUTES_ESTIMATE = {
+    "Plate 1 - Standard Curves":  15,
+    "Plate 2 - Synergy Matrix":   25,
+    "Plate 3 - Multiplex Blocks":  8,
+    "Plate 4 - ELISA Layout":     25,
+    "Plate 5 - Mixed Bouquet":    20,
+    "Plate 6 - Concentric Rings": 30,
+}
+
 def add_parameters(parameters):
     parameters.add_int(
         variable_name="viewing_delay_s",
@@ -1186,19 +1199,13 @@ def run(protocol: protocol_api.ProtocolContext):
         f"+{DEAD_VOLUME_PER_REAGENT_UL} uL dead volume per reagent."
     )
 
-    # Rough run-time projection. The numbers are eyeballed from prior
-    # runs and assume default delay parameters. Skipped plates subtract
-    # their share; trailed-test instrumentation adds the per-step delay.
-    _per_plate_minutes = {
-        "Plate 1 - Standard Curves":  15,
-        "Plate 2 - Synergy Matrix":   25,
-        "Plate 3 - Multiplex Blocks":  8,
-        "Plate 4 - ELISA Layout":     25,
-        "Plate 5 - Mixed Bouquet":    20,
-        "Plate 6 - Concentric Rings": 30,
-    }
+    # Rough run-time projection - the per-plate minute estimates live in
+    # the module-level PLATE_MINUTES_ESTIMATE dict so they can be tuned
+    # in one place and asserted on in the smoke test. Skipped plates
+    # subtract their share; trailed-test instrumentation adds the
+    # per-step delay.
     _enabled_plate_minutes = sum(
-        _per_plate_minutes[label]
+        PLATE_MINUTES_ESTIMATE[label]
         for label, name in zip(PLATE_PARAM_LABELS, PLATE_PARAM_NAMES)
         if getattr(protocol.params, name, True)
     )

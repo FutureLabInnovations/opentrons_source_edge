@@ -172,6 +172,13 @@ def _check_painted_lab_constants(mod) -> None:
     for name in mod.PLATE_PARAM_NAMES:
         assert name.startswith("run_plate_"), name
 
+    # PLATE_MINUTES_ESTIMATE must cover every label exactly.
+    assert set(mod.PLATE_MINUTES_ESTIMATE) == set(mod.PLATE_PARAM_LABELS), (
+        mod.PLATE_MINUTES_ESTIMATE.keys(), mod.PLATE_PARAM_LABELS,
+    )
+    for label, minutes in mod.PLATE_MINUTES_ESTIMATE.items():
+        assert isinstance(minutes, int) and minutes > 0, (label, minutes)
+
     # Volume constants match the painted_lab values.
     assert mod.STOCK_UL == 150
     assert mod.DILUENT_UL == 75

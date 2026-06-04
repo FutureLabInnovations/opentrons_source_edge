@@ -1188,12 +1188,20 @@ def run(protocol: protocol_api.ProtocolContext):
     ):
         if not enabled:
             protocol.comment(f"  (skipped: {label})")
-            _plate_times.append((label, 0.0, False))
+            _plate_times.append((label, 0.0, False, 0, 0))
             continue
 
         _plate_started_at = time.time()
+        _asp_at_start = _trailed_counts["asp"]
+        _disp_at_start = _trailed_counts["disp"]
         workflow(plate, i)
-        _plate_times.append((label, time.time() - _plate_started_at, True))
+        _plate_times.append((
+            label,
+            time.time() - _plate_started_at,
+            True,
+            _trailed_counts["asp"] - _asp_at_start,
+            _trailed_counts["disp"] - _disp_at_start,
+        ))
 
         if incubation_delay_s > 0:
             protocol.delay(
@@ -1212,10 +1220,11 @@ def run(protocol: protocol_api.ProtocolContext):
         f"=== Timing summary: {_plates_run}/{len(plates)} plates in "
         f"{_run_seconds/60:.1f} min ({_run_seconds:.0f} s) ==="
     )
-    for _label, _secs, _was_run in _plate_times:
+    for _label, _secs, _was_run, _asp, _disp in _plate_times:
         if _was_run:
             protocol.comment(
-                f"  {_label:<32}: {_secs/60:5.2f} min ({_secs:5.0f} s)"
+                f"  {_label:<32}: {_secs/60:5.2f} min ({_secs:5.0f} s)  "
+                f"[asp={_asp}, disp={_disp}]"
             )
         else:
             protocol.comment(f"  {_label:<32}: (skipped)")

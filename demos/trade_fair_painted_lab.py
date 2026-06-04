@@ -61,6 +61,19 @@ Liquids are registered with protocol.define_liquid() and assigned to
 their starting wells with well.load_liquid(), so the Opentrons app
 shows the booth crew exactly what to load and where during setup.
 
+Test-instrumentation note:
+  The TRAILING_TEST_ENABLED constant (also exposed as the same-named
+  bool RTP) splits every aspirate/dispense into a (V - pipette.min)
+  + pause + pipette.min pair so the visualizer can render the tip
+  height after the larger main draw. On the OT-2 P300 GEN2 the
+  pipette minimum is 20 uL, which means a few workflow volumes
+  (e.g. the 20 uL synergy-matrix indicator, 30 uL water base) would
+  end up with a main step below the pipette's hardware minimum. The
+  pre-flight pipette-compat check prints a WARN comment for those
+  cases; on OT-2 you may want to flip TRAILING_TEST_ENABLED OFF in
+  the runtime parameters for the run. On Flex 1k (min 5 uL) all the
+  workflow volumes split cleanly.
+
 ==============================================================================
 MATERIALS  (everything you need at the booth)
 ==============================================================================

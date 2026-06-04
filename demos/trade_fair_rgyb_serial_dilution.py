@@ -639,6 +639,7 @@ def run(protocol: protocol_api.ProtocolContext):
         _plate_started_at = time.time()
         run_one_plate(plate, colour,
                       single_tip_index=sng_tip, multi_tip_col_index=mlt_col)
+        protocol.comment(f"--- Plate {plate.parent} ({colour}) complete ---")
         _plate_times.append((colour, time.time() - _plate_started_at))
         plates_run += 1
     protocol.comment(f"\n=== Plates completed: {plates_run}/3 ===")

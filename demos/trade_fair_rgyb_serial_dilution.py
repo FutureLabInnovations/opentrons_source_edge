@@ -277,6 +277,7 @@ XFER_UL     = 75      # serial dilution transfer
 MIX_UL      = 75      # in-well mix volume
 MIX_REPS    = 4
 WASH_MIX_UL = 250     # tip-wash in-place mix volume
+WASH_MIX_REPS = 4     # tip-wash cycles per call
 
 # Smart-planning buffers
 OVERHEAD_FRACTION = 0.03
@@ -527,7 +528,7 @@ def run(protocol: protocol_api.ProtocolContext):
         # In-place wash. Multi-channel still does mix(4, 250) - the wash
         # lane is a wide trough so all 8 channels reach into the same lane.
         pipette.move_to(wash_well.bottom(z=2))
-        pipette.mix(4, WASH_MIX_UL, wash_well.bottom(z=2))
+        pipette.mix(WASH_MIX_REPS, WASH_MIX_UL, wash_well.bottom(z=2))
         pipette.blow_out(wash_well.top(z=-2))
 
     # -----------------------------------------------------------------------

@@ -218,6 +218,23 @@ def _check_painted_lab_planner_math(mod) -> None:
         total_lanes, len(mod.ASSIGNABLE_LANES),
     )
 
+    # Reproduce the cursor-based lane assignment loop in run() and check
+    # the per-reagent lane lists match the documented worst-case layout.
+    cursor = 0
+    actual_lanes = {}
+    for reagent in ("red", "yellow", "blue", "water"):
+        n_lanes = expected[reagent][1]
+        actual_lanes[reagent] = mod.ASSIGNABLE_LANES[cursor:cursor + n_lanes]
+        cursor += n_lanes
+    assert actual_lanes["red"]    == ["A1"],          actual_lanes["red"]
+    assert actual_lanes["yellow"] == ["A2"],          actual_lanes["yellow"]
+    assert actual_lanes["blue"]   == ["A3", "A4"],    actual_lanes["blue"]
+    assert actual_lanes["water"]  == ["A5", "A6"],    actual_lanes["water"]
+    assert mod.WASH_LANE == "A12", mod.WASH_LANE
+    # No collision between reagent lanes and the wash lane.
+    all_reagent_lanes = sum(actual_lanes.values(), [])
+    assert mod.WASH_LANE not in all_reagent_lanes, mod.WASH_LANE
+
     # Volume constants match the painted_lab values.
     assert mod.STOCK_UL == 150
     assert mod.DILUENT_UL == 75

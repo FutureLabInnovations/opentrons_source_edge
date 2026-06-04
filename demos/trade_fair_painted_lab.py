@@ -154,6 +154,21 @@ metadata = {
 # define_liquid() and load_liquid() are available from 2.14+, so 2.18 covers both.
 requirements = {"robotType": "OT-2", "apiLevel": "2.18"}
 
+# ---------------------------------------------------------------------------
+# Test instrumentation
+# ---------------------------------------------------------------------------
+# When TRAILING_TEST_ENABLED is True, every call routed through
+# trailed_aspirate() / trailed_dispense() is split into:
+#       1) main step at (vol - TRAILING_VOL_UL)  at the requested location
+#       2) protocol.delay(seconds=TRAILING_DELAY_S)
+#       3) tail step at TRAILING_VOL_UL          at the same location
+# Net volume per logical step is unchanged (vol-eps + eps = vol). Set the
+# toggle to False to silently fall back to a single native aspirate/dispense.
+TRAILING_TEST_ENABLED = True
+TRAILING_VOL_UL       = 0.01
+TRAILING_DELAY_S      = 0.5
+
+
 
 # ---------------------------------------------------------------------------
 # Tunables
@@ -249,6 +264,43 @@ def add_parameters(parameters):
 # ---------------------------------------------------------------------------
 
 def run(protocol: protocol_api.ProtocolContext):
+
+
+    # ---------------- test-instrumentation wrappers ----------------
+    # See module-level TRAILING_TEST_ENABLED to disable.
+    # The tail step uses max(TRAILING_VOL_UL, pipette.min_volume), so on
+    # pipettes with a hardware floor above 0.01 uL (e.g. Flex 1k = 5 uL),
+    # the 0.01 uL request is silently bumped up to the pipette minimum.
+    # Net volume per logical step is unchanged either way.
+    def _trailed_eps(pipette):
+        return max(TRAILING_VOL_UL,
+                   float(getattr(pipette, "min_volume", TRAILING_VOL_UL)))
+
+    def trailed_aspirate(pipette, vol_ul, location):
+        if not TRAILING_TEST_ENABLED:
+            pipette.aspirate(vol_ul, location)
+            return
+        eps = _trailed_eps(pipette)
+        if vol_ul < 2 * eps:
+            # Volume too small to split into (main + tail) without one
+            # half going below the pipette minimum; fall back to native.
+            pipette.aspirate(vol_ul, location)
+            return
+        pipette.aspirate(vol_ul - eps, location)
+        protocol.delay(seconds=TRAILING_DELAY_S)
+        pipette.aspirate(eps,           location)
+
+    def trailed_dispense(pipette, vol_ul, location):
+        if not TRAILING_TEST_ENABLED:
+            pipette.dispense(vol_ul, location)
+            return
+        eps = _trailed_eps(pipette)
+        if vol_ul < 2 * eps:
+            pipette.dispense(vol_ul, location)
+            return
+        pipette.dispense(vol_ul - eps, location)
+        protocol.delay(seconds=TRAILING_DELAY_S)
+        pipette.dispense(eps,           location)
 
     viewing_delay_s    = protocol.params.viewing_delay_s
     incubation_delay_s = protocol.params.incubation_delay_s
@@ -427,9 +479,7 @@ def run(protocol: protocol_api.ProtocolContext):
             if step <= 0:
                 _advance_lane(reagent)
                 continue
-            pipette.aspirate((step) - 0.01, reservoir[lane])
-            protocol.delay(seconds=0.5)
-            pipette.aspirate(0.01, reservoir[lane])
+            trailed_aspirate(pipette, step, reservoir[lane])
             remaining_ul[lane] = max(0.0, available_total - step * channels)
             remaining_per_channel -= step
             if remaining_per_channel > 0:
@@ -441,9 +491,7 @@ def run(protocol: protocol_api.ProtocolContext):
         # Proven touch-off-without-touch-tip: dispense above the surface
         # (well.top(z=-5)), then hover at top(z=lift_z) so any hanging
         # droplet drops into the well instead of being dragged.
-        pipette.dispense((vol_ul) - 0.01, well.top(z=-5))
-        protocol.delay(seconds=0.5)
-        pipette.dispense(0.01, well.top(z=-5))
+        trailed_dispense(pipette, vol_ul, well.top(z=-5))
         pipette.move_to(well.top(z=lift_z))
 
     # =====================================================================
@@ -518,12 +566,8 @@ def run(protocol: protocol_api.ProtocolContext):
         for col in range(first_col, last_col_exclusive - 1):
             src = plate.columns()[col][0].bottom(2)
             dst = plate.columns()[col + 1][0].bottom(2)
-            p300m.aspirate((XFER_UL) - 0.01, src)
-            protocol.delay(seconds=0.5)
-            p300m.aspirate(0.01, src)
-            p300m.dispense((XFER_UL) - 0.01, dst)
-            protocol.delay(seconds=0.5)
-            p300m.dispense(0.01, dst)
+            trailed_aspirate(p300m, XFER_UL, src)
+            trailed_dispense(p300m, XFER_UL, dst)
             p300m.mix(MIX_REPS, MIX_UL, dst)
             p300m.blow_out(plate.columns()[col + 1][0].top(z=-2))
         p300m.drop_tip()
@@ -538,9 +582,7 @@ def run(protocol: protocol_api.ProtocolContext):
             target = w if hasattr(w, "top") else plate_lookup(w)
             aspirate_from_sources(p300s, vol_ul, lane)
             if mix_after and w is wells[-1]:
-                p300s.dispense((vol_ul) - 0.01, target.bottom(2))
-                protocol.delay(seconds=0.5)
-                p300s.dispense(0.01, target.bottom(2))
+                trailed_dispense(p300s, vol_ul, target.bottom(2))
                 p300s.mix(2, MIX_UL, target.bottom(2))
                 p300s.move_to(target.top(z=-2))
             else:
@@ -586,16 +628,12 @@ def run(protocol: protocol_api.ProtocolContext):
         pick_single_tip("red")
         for w in (col1["G"], col1["H"]):
             aspirate_from_sources(p300s, HALF_STOCK_UL, "red")
-            p300s.dispense((HALF_STOCK_UL) - 0.01, w.bottom(2))
-            protocol.delay(seconds=0.5)
-            p300s.dispense(0.01, w.bottom(2))
+            trailed_dispense(p300s, HALF_STOCK_UL, w.bottom(2))
         p300s.drop_tip()
         pick_single_tip("blue")
         for w in (col1["G"], col1["H"]):
             aspirate_from_sources(p300s, HALF_STOCK_UL, "blue")
-            p300s.dispense((HALF_STOCK_UL) - 0.01, w.bottom(2))
-            protocol.delay(seconds=0.5)
-            p300s.dispense(0.01, w.bottom(2))
+            trailed_dispense(p300s, HALF_STOCK_UL, w.bottom(2))
             p300s.mix(2, MIX_UL, w.bottom(2))
             p300s.move_to(w.top(z=-2))
         p300s.drop_tip()
@@ -737,12 +775,8 @@ def run(protocol: protocol_api.ProtocolContext):
             for r_idx in range(N_ROWS - 1):
                 src = plate.wells_by_name()[f"{'ABCDEFGH'[r_idx]}{col_letter}"]
                 dst = plate.wells_by_name()[f"{'ABCDEFGH'[r_idx + 1]}{col_letter}"]
-                p300s.aspirate((std_xfer_ul) - 0.01, src.bottom(2))
-                protocol.delay(seconds=0.5)
-                p300s.aspirate(0.01, src.bottom(2))
-                p300s.dispense((std_xfer_ul) - 0.01, dst.bottom(2))
-                protocol.delay(seconds=0.5)
-                p300s.dispense(0.01, dst.bottom(2))
+                trailed_aspirate(p300s, std_xfer_ul, src.bottom(2))
+                trailed_dispense(p300s, std_xfer_ul, dst.bottom(2))
                 p300s.mix(2, std_xfer_ul, dst.bottom(2))
                 p300s.move_to(dst.top(z=-2))
         p300s.drop_tip()
@@ -815,16 +849,12 @@ def run(protocol: protocol_api.ProtocolContext):
         pick_single_tip("red")
         for w in ab:
             aspirate_from_sources(p300s, HALF_STOCK_UL, "red")
-            p300s.dispense((HALF_STOCK_UL) - 0.01, w.bottom(2))
-            protocol.delay(seconds=0.5)
-            p300s.dispense(0.01, w.bottom(2))
+            trailed_dispense(p300s, HALF_STOCK_UL, w.bottom(2))
         p300s.drop_tip()
         pick_single_tip("yellow")
         for w in ab:
             aspirate_from_sources(p300s, HALF_STOCK_UL, "yellow")
-            p300s.dispense((HALF_STOCK_UL) - 0.01, w.bottom(2))
-            protocol.delay(seconds=0.5)
-            p300s.dispense(0.01, w.bottom(2))
+            trailed_dispense(p300s, HALF_STOCK_UL, w.bottom(2))
             p300s.mix(2, MIX_UL, w.bottom(2))
             p300s.move_to(w.top(z=-2))
         p300s.drop_tip()
@@ -833,16 +863,12 @@ def run(protocol: protocol_api.ProtocolContext):
         pick_single_tip("yellow")
         for w in cd:
             aspirate_from_sources(p300s, HALF_STOCK_UL, "yellow")
-            p300s.dispense((HALF_STOCK_UL) - 0.01, w.bottom(2))
-            protocol.delay(seconds=0.5)
-            p300s.dispense(0.01, w.bottom(2))
+            trailed_dispense(p300s, HALF_STOCK_UL, w.bottom(2))
         p300s.drop_tip()
         pick_single_tip("blue")
         for w in cd:
             aspirate_from_sources(p300s, HALF_STOCK_UL, "blue")
-            p300s.dispense((HALF_STOCK_UL) - 0.01, w.bottom(2))
-            protocol.delay(seconds=0.5)
-            p300s.dispense(0.01, w.bottom(2))
+            trailed_dispense(p300s, HALF_STOCK_UL, w.bottom(2))
             p300s.mix(2, MIX_UL, w.bottom(2))
             p300s.move_to(w.top(z=-2))
         p300s.drop_tip()
@@ -851,16 +877,12 @@ def run(protocol: protocol_api.ProtocolContext):
         pick_single_tip("red")
         for w in ef:
             aspirate_from_sources(p300s, HALF_STOCK_UL, "red")
-            p300s.dispense((HALF_STOCK_UL) - 0.01, w.bottom(2))
-            protocol.delay(seconds=0.5)
-            p300s.dispense(0.01, w.bottom(2))
+            trailed_dispense(p300s, HALF_STOCK_UL, w.bottom(2))
         p300s.drop_tip()
         pick_single_tip("blue")
         for w in ef:
             aspirate_from_sources(p300s, HALF_STOCK_UL, "blue")
-            p300s.dispense((HALF_STOCK_UL) - 0.01, w.bottom(2))
-            protocol.delay(seconds=0.5)
-            p300s.dispense(0.01, w.bottom(2))
+            trailed_dispense(p300s, HALF_STOCK_UL, w.bottom(2))
             p300s.mix(2, MIX_UL, w.bottom(2))
             p300s.move_to(w.top(z=-2))
         p300s.drop_tip()
@@ -869,23 +891,17 @@ def run(protocol: protocol_api.ProtocolContext):
         pick_single_tip("red")
         for w in gh:
             aspirate_from_sources(p300s, THIRD_STOCK_UL, "red")
-            p300s.dispense((THIRD_STOCK_UL) - 0.01, w.bottom(2))
-            protocol.delay(seconds=0.5)
-            p300s.dispense(0.01, w.bottom(2))
+            trailed_dispense(p300s, THIRD_STOCK_UL, w.bottom(2))
         p300s.drop_tip()
         pick_single_tip("yellow")
         for w in gh:
             aspirate_from_sources(p300s, THIRD_STOCK_UL, "yellow")
-            p300s.dispense((THIRD_STOCK_UL) - 0.01, w.bottom(2))
-            protocol.delay(seconds=0.5)
-            p300s.dispense(0.01, w.bottom(2))
+            trailed_dispense(p300s, THIRD_STOCK_UL, w.bottom(2))
         p300s.drop_tip()
         pick_single_tip("blue")
         for w in gh:
             aspirate_from_sources(p300s, THIRD_STOCK_UL, "blue")
-            p300s.dispense((THIRD_STOCK_UL) - 0.01, w.bottom(2))
-            protocol.delay(seconds=0.5)
-            p300s.dispense(0.01, w.bottom(2))
+            trailed_dispense(p300s, THIRD_STOCK_UL, w.bottom(2))
             p300s.mix(2, MIX_UL, w.bottom(2))
             p300s.move_to(w.top(z=-2))
         p300s.drop_tip()
@@ -948,9 +964,7 @@ def run(protocol: protocol_api.ProtocolContext):
                 for w_name in ring_wells:
                     w = plate.wells_by_name()[w_name]
                     aspirate_from_sources(p300s, sec_vol, sec_lane)
-                    p300s.dispense((sec_vol) - 0.01, w.bottom(2))
-                    protocol.delay(seconds=0.5)
-                    p300s.dispense(0.01, w.bottom(2))
+                    trailed_dispense(p300s, sec_vol, w.bottom(2))
                     p300s.mix(2, MIX_UL, w.bottom(2))
                     p300s.move_to(w.top(z=-2))
                 p300s.drop_tip()

@@ -120,6 +120,21 @@ metadata = {
 # proven internal protocol's apiLevel exactly.
 requirements = {"robotType": "OT-2", "apiLevel": "2.16"}
 
+# ---------------------------------------------------------------------------
+# Test instrumentation
+# ---------------------------------------------------------------------------
+# When TRAILING_TEST_ENABLED is True, every call routed through
+# trailed_aspirate() / trailed_dispense() is split into:
+#       1) main step at (vol - TRAILING_VOL_UL)  at the requested location
+#       2) protocol.delay(seconds=TRAILING_DELAY_S)
+#       3) tail step at TRAILING_VOL_UL          at the same location
+# Net volume per logical step is unchanged (vol-eps + eps = vol). Set the
+# toggle to False to silently fall back to a single native aspirate/dispense.
+TRAILING_TEST_ENABLED = True
+TRAILING_VOL_UL       = 0.01
+TRAILING_DELAY_S      = 0.5
+
+
 
 # ===========================================================================
 # Liquid-tracking classes
@@ -251,6 +266,43 @@ LANE_USABLE_UL    = 13_000  # 13 mL working fill per NEST lane
 # ===========================================================================
 
 def run(protocol: protocol_api.ProtocolContext):
+
+
+    # ---------------- test-instrumentation wrappers ----------------
+    # See module-level TRAILING_TEST_ENABLED to disable.
+    # The tail step uses max(TRAILING_VOL_UL, pipette.min_volume), so on
+    # pipettes with a hardware floor above 0.01 uL (e.g. Flex 1k = 5 uL),
+    # the 0.01 uL request is silently bumped up to the pipette minimum.
+    # Net volume per logical step is unchanged either way.
+    def _trailed_eps(pipette):
+        return max(TRAILING_VOL_UL,
+                   float(getattr(pipette, "min_volume", TRAILING_VOL_UL)))
+
+    def trailed_aspirate(pipette, vol_ul, location):
+        if not TRAILING_TEST_ENABLED:
+            pipette.aspirate(vol_ul, location)
+            return
+        eps = _trailed_eps(pipette)
+        if vol_ul < 2 * eps:
+            # Volume too small to split into (main + tail) without one
+            # half going below the pipette minimum; fall back to native.
+            pipette.aspirate(vol_ul, location)
+            return
+        pipette.aspirate(vol_ul - eps, location)
+        protocol.delay(seconds=TRAILING_DELAY_S)
+        pipette.aspirate(eps,           location)
+
+    def trailed_dispense(pipette, vol_ul, location):
+        if not TRAILING_TEST_ENABLED:
+            pipette.dispense(vol_ul, location)
+            return
+        eps = _trailed_eps(pipette)
+        if vol_ul < 2 * eps:
+            pipette.dispense(vol_ul, location)
+            return
+        pipette.dispense(vol_ul - eps, location)
+        protocol.delay(seconds=TRAILING_DELAY_S)
+        pipette.dispense(eps,           location)
 
     # -----------------------------------------------------------------------
     # Labware
@@ -453,12 +505,8 @@ def run(protocol: protocol_api.ProtocolContext):
         for i in range(8, 96):  # wells 8..95 in column-major order = cols 2..12
             dst_well   = plate.wells()[i]
             src_well, src_z = aspirate_diluent(DILUENT_UL)
-            p300s.aspirate((DILUENT_UL) - 0.01, src_well.bottom(src_z))
-            protocol.delay(seconds=0.5)
-            p300s.aspirate(0.01, src_well.bottom(src_z))
-            p300s.dispense((DILUENT_UL) - 0.01, dst_well.top(z=-5))
-            protocol.delay(seconds=0.5)
-            p300s.dispense(0.01, dst_well.top(z=-5))
+            trailed_aspirate(p300s, DILUENT_UL, src_well.bottom(src_z))
+            trailed_dispense(p300s, DILUENT_UL, dst_well.top(z=-5))
             lift_z = well_trackers[dst_well].add(DILUENT_UL)
             p300s.move_to(dst_well.bottom(z=lift_z))
 
@@ -467,12 +515,8 @@ def run(protocol: protocol_api.ProtocolContext):
         for i in range(8):
             dst_well = plate.wells()[i]
             src_z    = colour_tracker.aspirate_height(STOCK_UL)
-            p300s.aspirate((STOCK_UL) - 0.01, colour_tracker.well.bottom(src_z))
-            protocol.delay(seconds=0.5)
-            p300s.aspirate(0.01, colour_tracker.well.bottom(src_z))
-            p300s.dispense((STOCK_UL) - 0.01, dst_well.top(z=-5))
-            protocol.delay(seconds=0.5)
-            p300s.dispense(0.01, dst_well.top(z=-5))
+            trailed_aspirate(p300s, STOCK_UL, colour_tracker.well.bottom(src_z))
+            trailed_dispense(p300s, STOCK_UL, dst_well.top(z=-5))
             lift_z   = well_trackers[dst_well].add(STOCK_UL)
             p300s.move_to(dst_well.bottom(z=lift_z))
 
@@ -492,12 +536,8 @@ def run(protocol: protocol_api.ProtocolContext):
             src_well = plate.wells()[temp_well]
             temp_well += 8
             dst_well = plate.wells()[temp_well]
-            p300m.aspirate((XFER_UL) - 0.01, src_well.bottom(z=2))
-            protocol.delay(seconds=0.5)
-            p300m.aspirate(0.01, src_well.bottom(z=2))
-            p300m.dispense((XFER_UL) - 0.01, dst_well.top(z=-5))
-            protocol.delay(seconds=0.5)
-            p300m.dispense(0.01, dst_well.top(z=-5))
+            trailed_aspirate(p300m, XFER_UL, src_well.bottom(z=2))
+            trailed_dispense(p300m, XFER_UL, dst_well.top(z=-5))
             p300m.mix(MIX_REPS, MIX_UL, dst_well.bottom(z=2))
             # Update trackers for all 8 destination wells in this column.
             # The lift-off height uses the A-row well as the reference;

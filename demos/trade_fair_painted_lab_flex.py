@@ -1180,6 +1180,20 @@ def run(protocol: protocol_api.ProtocolContext):
         else:
             protocol.comment(f"  {_label:<32}: (skipped)")
 
+    protocol.comment("=== Tip usage ===")
+    single_tip_total = sum(tip_index.values())
+    single_tip_capacity = sum(len(p) for p in tip_pools.values())
+    sec_breakdown = ", ".join(
+        f"{c}={tip_index[c]}/{len(tip_pools[c])}" for c in TIP_SECTIONS
+    )
+    protocol.comment(
+        f"  single-channel: {single_tip_total}/{single_tip_capacity} "
+        f"(per section: {sec_breakdown})"
+    )
+    protocol.comment(
+        f"  multi-channel : {multi_idx['next']}/{len(multi_columns)} columns"
+    )
+
     protocol.comment("=== End-of-run reservoir usage (uL remaining per lane) ===")
     for reagent in ("red", "yellow", "blue", "water"):
         lanes = plan[reagent]["lanes"]

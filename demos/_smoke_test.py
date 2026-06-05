@@ -253,9 +253,69 @@ def _check_painted_lab_planner_math(mod) -> None:
     assert mod.WORKING_LANE_CAPACITY_UL == 12_000
 
 
+# Opentrons runtime-parameter string limits (enforced by the API at
+# load time). description must be <= 100 chars, display_name <= 30.
+RTP_DESC_MAX = 100
+RTP_NAME_MAX = 30
+
+
+def _check_rtp_string_lengths(path) -> list:
+    """Static AST scan of a demo file's add_* parameter calls. Returns a
+    list of human-readable problems (empty == clean). Only string-literal
+    descriptions/display_names are checked; f-string forms are validated
+    separately by their construction (short fixed prefixes)."""
+    import ast as _ast
+    import pathlib as _pl
+
+    problems = []
+    tree = _ast.parse(_pl.Path(path).read_text())
+    for node in _ast.walk(tree):
+        if not isinstance(node, _ast.Call):
+            continue
+        fn_name = getattr(node.func, "attr", None)
+        if not (fn_name and fn_name.startswith("add_")):
+            continue
+        kw = {k.arg: k.value for k in node.keywords}
+
+        def _literal(v):
+            # Implicitly-concatenated string literals collapse to one
+            # ast.Constant at parse time, so this covers the (... ...) form.
+            if isinstance(v, _ast.Constant) and isinstance(v.value, str):
+                return v.value
+            return None
+
+        var = _literal(kw["variable_name"]) if "variable_name" in kw else "?"
+        desc = _literal(kw["description"]) if "description" in kw else None
+        disp = _literal(kw["display_name"]) if "display_name" in kw else None
+        if desc is not None and len(desc) > RTP_DESC_MAX:
+            problems.append(
+                f"L{node.lineno}: description for '{var}' is "
+                f"{len(desc)} chars (max {RTP_DESC_MAX})"
+            )
+        if disp is not None and len(disp) > RTP_NAME_MAX:
+            problems.append(
+                f"L{node.lineno}: display_name for '{var}' is "
+                f"{len(disp)} chars (max {RTP_NAME_MAX})"
+            )
+    return problems
+
+
 def main() -> int:
     _stub_opentrons()
     failures = 0
+
+    # Source-level RTP length check across every demo file (the 100/30
+    # char limits are enforced by the Opentrons API at load time).
+    import pathlib as _pl
+    for path in sorted(_pl.Path("demos").glob("trade_fair_*.py")):
+        problems = _check_rtp_string_lengths(path)
+        if problems:
+            failures += len(problems)
+            for p in problems:
+                print(f"FAIL  {path.name}: {p}")
+        else:
+            print(f"PASS  {path.name}: RTP string lengths")
+
     for name in (
         "trade_fair_rgyb_serial_dilution",
         "trade_fair_rgyb_serial_dilution_flex",

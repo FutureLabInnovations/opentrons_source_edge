@@ -341,10 +341,8 @@ def add_parameters(parameters):
         variable_name="trailing_test_enabled",
         display_name="Trailed test mode",
         description=(
-            "Split every aspirate/dispense into (V - pipette.min_volume) "
-            "+ a short pause + pipette.min_volume at the same height. "
-            "Useful for visualizer inspection. Defaults match the "
-            "TRAILING_TEST_ENABLED module constant."
+            "Split each aspirate/dispense into a main draw + pause + tiny "
+            "tail for visualizer inspection."
         ),
         default=TRAILING_TEST_ENABLED,
     )
@@ -352,9 +350,8 @@ def add_parameters(parameters):
         variable_name="pre_flight_pause",
         display_name="Pre-flight booth pause",
         description=(
-            "Pause after the pre-flight comment block prints, so the booth "
-            "crew can verify the reservoir matches the planned pour before "
-            "the run actually starts."
+            "Pause after the pre-flight plan prints so the crew can verify "
+            "the reservoir before the run."
         ),
         default=PRE_FLIGHT_PAUSE,
     )

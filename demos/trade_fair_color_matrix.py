@@ -305,12 +305,14 @@ def run(protocol: protocol_api.ProtocolContext):
         #    sample colors, so cannot be re-used for any other color step).
         multi_pick_fresh()
         for col in range(N_COLS - 2):  # transfers from col 0..10 into col 1..11
-            src = plate.columns()[col][0].bottom(2)
-            dst = plate.columns()[col + 1][0].bottom(2)
-            p300m.aspirate(xfer_ul, src)
-            p300m.dispense(xfer_ul, dst)
-            p300m.mix(mix_reps, mix_ul, dst)
-            p300m.blow_out(dst.top(-2))
+            src_well = plate.columns()[col][0]
+            dst_well = plate.columns()[col + 1][0]
+            p300m.aspirate(xfer_ul, src_well.bottom(2))
+            p300m.dispense(xfer_ul, dst_well.bottom(2))
+            p300m.mix(mix_reps, mix_ul, dst_well.bottom(2))
+            # blow_out must target the well: a Location (from .bottom())
+            # has no .top(). Matches the trade_fair_nest_flat pattern.
+            p300m.blow_out(dst_well.top(-2))
         # Final tip-off: dilution tips are saturated with mixed dye, so
         # don't return to rack even in wash mode.
         p300m.drop_tip()

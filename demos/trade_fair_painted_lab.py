@@ -1245,7 +1245,7 @@ def run(protocol: protocol_api.ProtocolContext):
     protocol.set_rail_lights(True)   # booth lights on
 
     _run_started_at = time.time()
-    _plate_times = []   # (label, seconds, was_run)
+    _plate_times = []   # (label, seconds, was_run, asp_count, disp_count)
     plate_enabled = [
         getattr(protocol.params, name, True) for name in PLATE_PARAM_NAMES
     ]
@@ -1283,7 +1283,7 @@ def run(protocol: protocol_api.ProtocolContext):
             )
 
     _run_seconds = time.time() - _run_started_at
-    _plates_run = sum(1 for _, _, was_run in _plate_times if was_run)
+    _plates_run = sum(1 for _entry in _plate_times if _entry[2])
     protocol.comment(
         f"=== Timing summary: {_plates_run}/{len(plates)} plates in "
         f"{_run_seconds/60:.1f} min ({_run_seconds:.0f} s) ==="

@@ -353,4 +353,14 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    _smoke_failures = main()
+    # Also run the end-to-end mock-simulation harness so a single
+    # `python3 demos/_smoke_test.py` covers static checks + run() exec.
+    import importlib.util
+    _sim_spec = importlib.util.spec_from_file_location(
+        "_sim_test", "demos/_sim_test.py",
+    )
+    _sim = importlib.util.module_from_spec(_sim_spec)
+    _sim_spec.loader.exec_module(_sim)
+    _sim_failures = _sim.main()
+    sys.exit(_smoke_failures + _sim_failures)

@@ -48,6 +48,7 @@ def main() -> int:
         "trade_fair_rgyb_serial_dilution_flex",
         "trade_fair_color_matrix",
         "trade_fair_nest_flat",
+        "trade_fair_loop_demo",
     ):
         try:
             mod = _load(name)
@@ -58,6 +59,22 @@ def main() -> int:
             import traceback
             print(f"FAIL  {name}: {type(e).__name__} - {e}")
             traceback.print_exc()
+
+    # Loop demo wet-mode pass (default exercises dry; wet has its own
+    # aspirate/dispense path and the row-A-only caveat comment).
+    try:
+        mod = _load("trade_fair_loop_demo")
+        n = _simulate(mod, overrides={
+            "n_cycles": 2,
+            "dispense_volume_ul": 20,   # wet
+            "inter_cycle_pause_s": 0,
+        })
+        print(f"PASS  trade_fair_loop_demo [wet]: run() completed, {n} comments")
+    except Exception as e:   # noqa: BLE001
+        failures += 1
+        import traceback
+        print(f"FAIL  trade_fair_loop_demo [wet]: {type(e).__name__} - {e}")
+        traceback.print_exc()
 
     # Second pass for the painted_lab pair: exercise the skip-plate and
     # trailing-off branches (those have their own tuple shapes / report

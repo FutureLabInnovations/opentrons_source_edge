@@ -305,9 +305,21 @@ class MockProtocolContext:
                 f"{self.deck[slot]}"
             )
         rectangular = "reservoir" in load_name
-        max_volume = 15000.0 if rectangular else 250.0
-        if "tiprack" in load_name:
+        if rectangular:
+            max_volume = 15000.0
+        elif "tiprack" in load_name:
             max_volume = 1000.0 if "1000" in load_name else 300.0
+        elif "tuberack" in load_name:
+            if "50ml" in load_name:
+                max_volume = 50_000.0
+            elif "15ml" in load_name:
+                max_volume = 15_000.0
+            elif "2ml" in load_name:
+                max_volume = 2_000.0
+            else:
+                max_volume = 2_000.0
+        else:
+            max_volume = 250.0   # generic flat / round 96-well default
         lw = MockLabware(load_name, location, label,
                          rectangular=rectangular, max_volume=max_volume)
         self.deck[slot] = lw

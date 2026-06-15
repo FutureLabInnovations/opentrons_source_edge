@@ -80,8 +80,8 @@ RUNTIME PARAMETERS
 
   n_cycles               Cycles before the run ends. Default 25
                          (~50 min). Max 500. Each cycle is ONE
-                         choreography from the 5 above; the pattern
-                         rotates round-robin.
+                         choreography; the pattern rotates round-
+                         robin through whichever set is enabled.
   pretend_volume_ul      Volume the multi aspirates / dispenses
                          (air). 50-300 uL. Higher = more visible
                          plunger motion. Default 150.
@@ -89,6 +89,13 @@ RUNTIME PARAMETERS
                          Set 0 for continuous flow.
   lift_mm                Lift height between columns. Default 25.
                          Higher = more dramatic arc.
+  enable_partial_pickup  Bool. Off (default) = 5 ALL-mode patterns
+                         only. On = adds HALF (PARTIAL_COLUMN, 4
+                         nozzles) and PINPOINT (SINGLE) so the
+                         rotation becomes 7 patterns with two
+                         tip-cluster shrinking moments per lap.
+                         Requires apiLevel 2.20 (already set) and
+                         tip racks NOT in an adapter.
 
 ==============================================================================
 WHAT THE BOOTH CREW SEES
@@ -153,6 +160,7 @@ DEFAULT_N_CYCLES = 25
 DEFAULT_VOL_UL = 150
 DEFAULT_PAUSE_S = 1
 DEFAULT_LIFT_MM = 25
+DEFAULT_ENABLE_PARTIAL = False   # HALF + PINPOINT off by default
 N_COLS = 12
 
 
@@ -188,6 +196,15 @@ def add_parameters(parameters):
         minimum=5, maximum=80,
         unit="mm",
     )
+    parameters.add_bool(
+        variable_name="enable_partial_pickup",
+        display_name="Partial tip pickup",
+        description=(
+            "Add HALF (4 nozzles) + PINPOINT (1 nozzle) patterns. "
+            "Off = full-channel sweeps only."
+        ),
+        default=DEFAULT_ENABLE_PARTIAL,
+    )
 
 
 def run(protocol: protocol_api.ProtocolContext):
@@ -195,6 +212,9 @@ def run(protocol: protocol_api.ProtocolContext):
     vol      = getattr(protocol.params, "pretend_volume_ul", DEFAULT_VOL_UL)
     pause_s  = getattr(protocol.params, "inter_cycle_pause_s", DEFAULT_PAUSE_S)
     lift_mm  = getattr(protocol.params, "lift_mm", DEFAULT_LIFT_MM)
+    partial_on = getattr(
+        protocol.params, "enable_partial_pickup", DEFAULT_ENABLE_PARTIAL,
+    )
 
     # =====================================================================
     # Labware
@@ -267,10 +287,15 @@ def run(protocol: protocol_api.ProtocolContext):
     def reconfigure_nozzles(target, start=None, end=None):
         """Switch the multi to a different nozzle layout. Requires
         returning the current tip (if any) first; picks fresh tips for
-        the new layout afterwards. No-op if already on this layout."""
-        if (target == layout_state["current"]
-                and start == layout_state["start"]
-                and end == layout_state["end"]):
+        the new layout afterwards. No-op only if both the layout matches
+        AND a tip is already on - so the initial run-start pickup still
+        happens even though the layout state defaults to ALL."""
+        same_layout = (
+            target == layout_state["current"]
+            and start == layout_state["start"]
+            and end == layout_state["end"]
+        )
+        if same_layout and multi.has_tip:
             return
         if multi.has_tip:
             multi.return_tip()
@@ -395,43 +420,77 @@ def run(protocol: protocol_api.ProtocolContext):
                 multi.dispense(per_well, w.bottom(z=2))
                 multi.move_to(w.top(z=lift_mm // 2))
 
-    patterns = [
+    # The full-channel choreographies always run; HALF + PINPOINT are
+    # only spliced in when the enable_partial_pickup RTP is True. With
+    # partial off the rotation is 5 patterns of ALL-mode sweeps, which
+    # is enough variety for a casual booth and avoids needing the
+    # apiLevel 2.20 + non-adapter tip-rack constraints to matter.
+    patterns_full = [
         ("WAVE",       pattern_wave),
         ("STAMP",      pattern_stamp),
-        ("HALF",       pattern_half),        # partial column, 4 nozzles
         ("MIX DANCE",  pattern_mix_dance),
-        ("PINPOINT",   pattern_pinpoint),    # SINGLE nozzle
         ("SPIRAL",     pattern_spiral),
         ("DRUMROLL",   pattern_drumroll),
     ]
+    patterns_partial = [
+        ("HALF",       pattern_half),        # partial column, 4 nozzles
+        ("PINPOINT",   pattern_pinpoint),    # SINGLE nozzle
+    ]
+    if partial_on:
+        # Splice the partial patterns into the rotation so a full lap
+        # alternates ALL-mode and partial-pickup scenes.
+        patterns = [
+            patterns_full[0],
+            patterns_full[1],
+            patterns_partial[0],     # HALF
+            patterns_full[2],
+            patterns_partial[1],     # PINPOINT
+            patterns_full[3],
+            patterns_full[4],
+        ]
+    else:
+        patterns = patterns_full
 
     # =====================================================================
     # Pre-flight report
     # =====================================================================
     protocol.comment("=== Trade Fair Dry-Choreo Loop ===")
     protocol.comment(
-        f"  Cycles    : {n_cycles}  (5 patterns rotating round-robin)"
+        f"  Cycles    : {n_cycles}  ({len(patterns)} patterns rotating round-robin)"
+    )
+    protocol.comment(
+        f"  Patterns  : {', '.join(name for name, _ in patterns)}"
     )
     protocol.comment(
         f"  Pipetting : DRY - {vol} uL pretend volume (plunger only)"
     )
     protocol.comment(f"  Pause     : {pause_s} s between cycles")
     protocol.comment(f"  Lift      : {lift_mm} mm between columns")
-    protocol.comment(
-        "  Tip swap  : only when the nozzle layout changes "
-        "(HALF / PINPOINT force fresh pickup)"
-    )
+    if partial_on:
+        protocol.comment(
+            "  Tip swap  : on nozzle-layout changes "
+            "(HALF / PINPOINT force fresh pickup)"
+        )
+    else:
+        protocol.comment(
+            "  Tip swap  : never within a run (ALL mode reused throughout)"
+        )
     protocol.comment(
         f"  Plates    : 3 flat 96-well plates at B2 / C2 / D2"
     )
     sec_per_pattern = {
         "WAVE":     N_COLS * 3 * 2,            # 12 cols x 3 plates x ~2 s
         "STAMP":    N_COLS * 3 * 1.5,
+        "HALF":     N_COLS * 3 * 2,
         "MIX DANCE": N_COLS * 3 * 3,
+        "PINPOINT": 11 * 3 * 1.5,              # 11 dots x 3 plates
         "SPIRAL":   N_COLS * 3 * 2,
         "DRUMROLL": N_COLS * 3 * 3.5,
     }
-    avg_cycle_s = sum(sec_per_pattern.values()) / len(sec_per_pattern)
+    active_pattern_secs = [
+        sec_per_pattern.get(name, N_COLS * 3 * 2) for name, _ in patterns
+    ]
+    avg_cycle_s = sum(active_pattern_secs) / len(active_pattern_secs)
     est_min = (avg_cycle_s + pause_s) * n_cycles / 60.0
     protocol.comment(f"  Estimated runtime: ~{est_min:.0f} min")
 

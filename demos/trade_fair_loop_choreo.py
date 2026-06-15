@@ -8,24 +8,36 @@ is just plunger motion against air. The robot doesn't know the
 difference, and visitors see realistic-looking pipetting work for as
 long as the booth is open.
 
-Five rotating choreographies (one per cycle, cycling round-robin)
+Seven rotating choreographies (one per cycle, cycling round-robin)
 give the demo enough variety that visitors can stop watching for
-five minutes, come back, and see a new motion:
+five minutes, come back, and see a new motion. Two of them use
+PARTIAL TIP PICKUP via configure_nozzle_layout() so the multi
+visibly halves (HALF) or shrinks to a single tip (PINPOINT) - very
+distinctive against the all-8-channel sweeps:
 
-  1. WAVE      column-major sweep across all 3 plates;
-                direction alternates per column
-  2. STAMP     per-plate left-to-right sweep at progressively slower
-                flow rates (front fast, back slow)
-  3. MIX DANCE per-column mix(2, vol) so the plunger machine-guns
-                up-and-down visibly at every well column
-  4. SPIRAL    outside-in column order (1, 12, 2, 11, 3, 10, ...) -
-                non-obvious pattern that catches the eye
-  5. DRUMROLL  three quick aspirate/dispense pairs per column then
-                a tall lift - reads as rhythmic tapping
+  1. WAVE      ALL          column-major sweep across all 3 plates;
+                            direction alternates per column
+  2. STAMP     ALL          per-plate left-to-right sweep at
+                            progressively slower flow rates
+  3. HALF      PARTIAL_COL  pickup with only the front 4 nozzles
+                            (H/G/F/E); sweep dispenses only into the
+                            front half of each column
+  4. MIX DANCE ALL          per-column mix(3, vol) - plunger machine-
+                            guns up-and-down visibly at every column
+  5. PINPOINT  SINGLE       only the H (front) nozzle is active; the
+                            multi acts like a single-channel painter
+                            and draws a plus-sign in the middle of
+                            each plate
+  6. SPIRAL    ALL          outside-in column order (1, 12, 2, 11,
+                            3, 10, ...) - non-obvious pattern
+  7. DRUMROLL  ALL          3 quick taps per column then a tall lift
+                            - reads as rhythmic tapping
 
-Between cycles, the multi returns its tip column and picks a fresh
-column from the OTHER tip box on every cycle, so both tip racks get
-used and the tip-swap motion is itself part of the show.
+Tip swaps only happen when the nozzle layout actually changes.
+Successive ALL-mode patterns share the same tip column (tip-
+efficient). HALF and PINPOINT each force a fresh pickup motion when
+they fire, and the visual of the arm going back to the tip rack and
+grabbing a new layout is itself part of the show.
 
 ==============================================================================
 MATERIALS
@@ -116,7 +128,13 @@ metadata = {
     ),
 }
 
-requirements = {"robotType": "OT-2", "apiLevel": "2.18"}
+requirements = {"robotType": "OT-2", "apiLevel": "2.20"}
+
+
+# Partial-tip-pickup constants. Available from apiLevel 2.20 on both
+# Flex and OT-2 pipettes (SINGLE works on every multi-channel; partial
+# column works on any 8-channel including the OT-2 P300 multi GEN2).
+from opentrons.protocol_api import SINGLE, PARTIAL_COLUMN, ALL  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +154,6 @@ DEFAULT_VOL_UL = 150
 DEFAULT_PAUSE_S = 1
 DEFAULT_LIFT_MM = 25
 N_COLS = 12
-TIP_SWAP_EVERY = 5     # cycles between tip-column swaps
 
 
 def add_parameters(parameters):
@@ -243,8 +260,36 @@ def run(protocol: protocol_api.ProtocolContext):
         multi.aspirate(vol_ul, well.bottom(z=2))
         multi.dispense(vol_ul, well.bottom(z=2))
 
+    # Track current nozzle layout so we only reconfigure (and incur a
+    # tip swap) when the next pattern actually needs a different shape.
+    layout_state = {"current": ALL, "start": None, "end": None}
+
+    def reconfigure_nozzles(target, start=None, end=None):
+        """Switch the multi to a different nozzle layout. Requires
+        returning the current tip (if any) first; picks fresh tips for
+        the new layout afterwards. No-op if already on this layout."""
+        if (target == layout_state["current"]
+                and start == layout_state["start"]
+                and end == layout_state["end"]):
+            return
+        if multi.has_tip:
+            multi.return_tip()
+        if target == ALL:
+            multi.configure_nozzle_layout(ALL)
+        elif target == SINGLE:
+            multi.configure_nozzle_layout(SINGLE, start=start)
+        elif target == PARTIAL_COLUMN:
+            multi.configure_nozzle_layout(PARTIAL_COLUMN, start=start, end=end)
+        else:
+            multi.configure_nozzle_layout(target)
+        layout_state["current"] = target
+        layout_state["start"] = start
+        layout_state["end"] = end
+        multi.pick_up_tip()
+
     # ----- Pattern 1: WAVE ------------------------------------------------
     def pattern_wave():
+        reconfigure_nozzles(ALL)
         multi.flow_rate.aspirate = 100
         multi.flow_rate.dispense = 200
         for col_idx in range(N_COLS):
@@ -258,6 +303,7 @@ def run(protocol: protocol_api.ProtocolContext):
     def pattern_stamp():
         # Speeds slow down as we move from front plate to back plate;
         # reads as the demo "winding down" before the next pattern fires.
+        reconfigure_nozzles(ALL)
         for idx, plate in enumerate(plates_f2b):
             multi.flow_rate.aspirate = max(50, 200 - idx * 60)
             multi.flow_rate.dispense = max(100, 400 - idx * 120)
@@ -271,6 +317,7 @@ def run(protocol: protocol_api.ProtocolContext):
     def pattern_mix_dance():
         # mix(reps, vol, location) does reps aspirate+dispense pairs in
         # place - plunger machine-guns up and down at every column.
+        reconfigure_nozzles(ALL)
         multi.flow_rate.aspirate = 250
         multi.flow_rate.dispense = 500
         for plate in plates_f2b:
@@ -282,6 +329,7 @@ def run(protocol: protocol_api.ProtocolContext):
     # ----- Pattern 4: SPIRAL ----------------------------------------------
     def pattern_spiral():
         # Outside-in column order: 1, 12, 2, 11, 3, 10, ...
+        reconfigure_nozzles(ALL)
         order = []
         for i in range(N_COLS // 2):
             order.append(i)
@@ -298,6 +346,7 @@ def run(protocol: protocol_api.ProtocolContext):
     def pattern_drumroll():
         # Three quick taps per column, tall lift between columns - reads
         # as a rhythmic drumroll across each plate.
+        reconfigure_nozzles(ALL)
         multi.flow_rate.aspirate = 280
         multi.flow_rate.dispense = 550
         for plate in plates_f2b:
@@ -307,10 +356,51 @@ def run(protocol: protocol_api.ProtocolContext):
                     fake_aspdisp(top_well, vol)
                 multi.move_to(top_well.top(z=lift_mm + 10))
 
+    # ----- Pattern 6: HALF (PARTIAL_COLUMN, 4 nozzles) --------------------
+    def pattern_half():
+        """Partial-column pickup with the front four nozzles (H, G, F, E).
+        Sweeps the columns dispensing only into the front half of each
+        plate. Visually: the multi suddenly halves in size and visits the
+        same columns but with a noticeably shorter tip cluster."""
+        reconfigure_nozzles(PARTIAL_COLUMN, start="H1", end="E1")
+        multi.flow_rate.aspirate = 120
+        multi.flow_rate.dispense = 240
+        for plate in plates_f2b:
+            for col_idx in range(N_COLS):
+                # With H1 as the primary nozzle, the API positions the H
+                # nozzle over the targeted well; the E/F/G nozzles land
+                # at rows G/F/E of the same column.
+                front_well = plate.wells_by_name()[f"H{col_idx + 1}"]
+                fake_aspdisp(front_well, vol)
+                multi.move_to(front_well.top(z=lift_mm))
+
+    # ----- Pattern 7: PINPOINT (SINGLE nozzle) ----------------------------
+    def pattern_pinpoint():
+        """SINGLE nozzle layout - exactly one channel of the multi is
+        active, so the pipette acts like a single-channel painter.
+        Draws a cross / plus sign in the middle of each plate; the
+        precise, well-by-well motion contrasts sharply with the full
+        column sweeps of the ALL-mode patterns."""
+        reconfigure_nozzles(SINGLE, start="H1")
+        multi.flow_rate.aspirate = 80
+        multi.flow_rate.dispense = 160
+        # Horizontal stroke (row E, cols 4..9) + vertical stroke (rows B..G, col 6)
+        h_stroke = [f"E{c + 1}" for c in range(3, 9)]
+        v_stroke = [f"{r}6"     for r in "BCDFG"]
+        per_well = max(20, vol // 3)
+        for plate in plates_f2b:
+            for w_name in h_stroke + v_stroke:
+                w = plate.wells_by_name()[w_name]
+                multi.aspirate(per_well, w.bottom(z=2))
+                multi.dispense(per_well, w.bottom(z=2))
+                multi.move_to(w.top(z=lift_mm // 2))
+
     patterns = [
         ("WAVE",       pattern_wave),
         ("STAMP",      pattern_stamp),
+        ("HALF",       pattern_half),        # partial column, 4 nozzles
         ("MIX DANCE",  pattern_mix_dance),
+        ("PINPOINT",   pattern_pinpoint),    # SINGLE nozzle
         ("SPIRAL",     pattern_spiral),
         ("DRUMROLL",   pattern_drumroll),
     ]
@@ -328,7 +418,8 @@ def run(protocol: protocol_api.ProtocolContext):
     protocol.comment(f"  Pause     : {pause_s} s between cycles")
     protocol.comment(f"  Lift      : {lift_mm} mm between columns")
     protocol.comment(
-        f"  Tip swap  : every {TIP_SWAP_EVERY} cycles, alternating tip box"
+        "  Tip swap  : only when the nozzle layout changes "
+        "(HALF / PINPOINT force fresh pickup)"
     )
     protocol.comment(
         f"  Plates    : 3 flat 96-well plates at B2 / C2 / D2"
@@ -350,22 +441,24 @@ def run(protocol: protocol_api.ProtocolContext):
     protocol.home()
     protocol.set_rail_lights(True)
 
-    multi.pick_up_tip()
+    # First-cycle pickup. reconfigure_nozzles() handles the actual
+    # pick_up_tip; from here on every pattern self-manages its tip via
+    # reconfigure_nozzles() at the top of its body. Tip swaps only
+    # happen when the nozzle layout actually changes, so successive
+    # ALL-mode patterns share the same tip column - tip-efficient AND
+    # visually still varied because the new partial-pickup patterns
+    # force a fresh pickup motion every time they fire.
+    reconfigure_nozzles(ALL)
 
     for cycle in range(1, n_cycles + 1):
         name, fn = patterns[(cycle - 1) % len(patterns)]
         protocol.comment(f"--- Cycle {cycle}/{n_cycles}: {name} ---")
         fn()
 
-        # Swap tip column every TIP_SWAP_EVERY cycles - the visual of the
-        # arm going back to a tip rack and grabbing a fresh column is
-        # itself part of the show.
-        if cycle % TIP_SWAP_EVERY == 0 and cycle < n_cycles:
-            multi.return_tip()
-            multi.pick_up_tip()
-
         if pause_s > 0 and cycle < n_cycles:
             protocol.delay(seconds=pause_s)
 
+    # End-of-run: drop back to ALL config + return tip cleanly.
+    reconfigure_nozzles(ALL)
     multi.return_tip()
     protocol.comment(f"=== Demo complete: {n_cycles} cycles ===")

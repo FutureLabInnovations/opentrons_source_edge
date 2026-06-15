@@ -206,6 +206,9 @@ class MockInstrument:
         self.tip_racks = list(tip_racks or [])
         self.flow_rate = MockFlowRate()
         self._has_tip = False
+        self._nozzle_layout = "ALL"
+        self._nozzle_start = None
+        self._nozzle_end = None
         self.min_volume, self.max_volume = _resolve_pipette_spec(load_name)
 
     # --- tip handling ---
@@ -233,6 +236,20 @@ class MockInstrument:
                 f"{self.name}: {action} {volume:.2f} uL exceeds max "
                 f"{self.max_volume} uL"
             )
+
+    @property
+    def has_tip(self):
+        return self._has_tip
+
+    def configure_nozzle_layout(self, style, start=None, end=None,
+                                 front_right=None, back_left=None,
+                                 tip_racks=None):
+        # Track the requested layout but do not simulate gantry behavior.
+        # The protocol code path is what matters for catching unpack /
+        # attribute errors; geometry side-effects belong in the real sim.
+        self._nozzle_layout = style
+        self._nozzle_start = start
+        self._nozzle_end = end
 
     def aspirate(self, volume, location=None, rate=1.0):
         self._check_vol("aspirate", volume)
@@ -369,6 +386,14 @@ def install_mocks():
     ot._is_opentrons_mock = True
     pa = types.ModuleType("opentrons.protocol_api")
     pa.ProtocolContext = MockProtocolContext
+    # Partial-tip-pickup constants (exported from opentrons.protocol_api
+    # since apiLevel 2.20). We expose them as opaque strings; protocols
+    # compare by identity/value, never reach into internals.
+    pa.SINGLE = "SINGLE"
+    pa.PARTIAL_COLUMN = "PARTIAL_COLUMN"
+    pa.COLUMN = "COLUMN"
+    pa.ROW = "ROW"
+    pa.ALL = "ALL"
     ot.protocol_api = pa
     sys.modules["opentrons"] = ot
     sys.modules["opentrons.protocol_api"] = pa

@@ -49,6 +49,7 @@ def main() -> int:
         "trade_fair_color_matrix",
         "trade_fair_nest_flat",
         "trade_fair_loop_demo",
+        "trade_fair_loop_choreo",
     ):
         try:
             mod = _load(name)
